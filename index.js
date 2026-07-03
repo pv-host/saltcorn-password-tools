@@ -1,33 +1,22 @@
 /**
  * saltcorn-password-tools
  *
- * Ein Saltcorn-Plugin, das Passwoerter im Klartext entgegennimmt und beim
- * Speichern automatisch in einen konfigurierbaren Hash umwandelt.
+ * Saltcorn plugin: nimmt Klartext-Passwoerter entgegen und speichert sie
+ * automatisch als Dovecot-kompatiblen Hash. Unterstuetzt BLF-CRYPT,
+ * SHA512-CRYPT und PBKDF2 mit konfigurierbarem {SCHEME}-Prefix.
+ * Live-Passwortstaerke via zxcvbn + Regelpruefung.
  *
- * Unterstuetzte Schemata (Dovecot-kompatibel):
- *   - BLF-CRYPT      (bcrypt, Prefix z. B. $2y$)
- *   - SHA512-CRYPT   ($6$...)
- *   - PBKDF2         Dovecot-Format: $1$SALT$ROUNDS$HASH_HEX
- *
- * Nutzung:
- *   1. In der Ziel-Tabelle zwei Felder anlegen:
- *        - password_plain  (Typ String)                 -> Formular-Eingabe
- *        - password_hash   (Typ "Password Hash")        -> gespeicherter Hash
- *   2. In Views/Editor fuer das Zielfeld die Field-View
- *      "hash_from_plain" verwenden.
- *   3. Alternativ: Feld password_plain als Typ "Password Plain" markieren -
- *      die Field-View "with_strength" zeigt Live-Staerke-Anzeige plus Auswahl.
- *
- * Die Plugin-Config liefert Defaults (Standard-Schema, Prefix-Verhalten,
- * Rundenzahlen, Passwortpolicy).
+ * Bereitgestellt werden:
+ *   - Zwei zusaetzliche fieldviews fuer den bestehenden Typ String:
+ *       * password_input      (Edit: Klartext-Eingabe + Staerke-Meter + Schema-Dropdown)
+ *       * password_hash_show  (Show: maskierter Hash-Anzeige)
+ *   - Trigger-Action `hash_password_field`
+ *   - Server-Funktionen pwtools_hash / pwtools_verify / pwtools_strength
+ *   - HTTP-Endpoint POST /pwtools/strength
  */
 
 "use strict";
 
-const path = require("path");
-
-// Diese Imports werden erst zur Laufzeit im Saltcorn-Prozess aufgeloest.
-// Beim isolierten Test/npm-install stehen sie ggf. nicht zur Verfuegung.
 const Workflow = require("@saltcorn/data/models/workflow");
 const Form = require("@saltcorn/data/models/form");
 const { input, span, select, option } = require("@saltcorn/markup/tags");
@@ -35,8 +24,10 @@ const { input, span, select, option } = require("@saltcorn/markup/tags");
 const { SCHEMES, hashPassword, verifyPassword } = require("./lib/hashes");
 const { evaluate } = require("./lib/strength");
 
+const PLUGIN_NAME = "saltcorn-password-tools";
+
 // -----------------------------------------------------------------------------
-// Configuration Workflow (Plugin-Ebene)
+// Configuration Workflow (Settings -> Modules -> Configure)
 // -----------------------------------------------------------------------------
 
 const configuration_workflow = () =>
@@ -44,7 +35,7 @@ const configuration_workflow = () =>
     steps: [
       {
         name: "Standard-Einstellungen",
-        form: async () =>
+        form: () =>
           new Form({
             fields: [
               {
@@ -55,23 +46,19 @@ const configuration_workflow = () =>
                 attributes: { options: SCHEMES },
                 default: "BLF-CRYPT",
                 sublabel:
-                  "Wird verwendet, wenn im Feld/Formular keine explizite Auswahl getroffen wird.",
+                  "Wird verwendet, wenn im Feld/Formular nichts explizit ausgewaehlt ist.",
               },
               {
                 name: "allow_user_choice",
                 label: "Benutzer darf Schema im Formular waehlen",
                 type: "Bool",
                 default: true,
-                sublabel:
-                  "Wenn deaktiviert, wird immer das Standard-Schema verwendet.",
               },
               {
                 name: "with_prefix",
-                label: 'Dovecot-Prefix "{SCHEME}" voranstellen',
+                label: "Dovecot-Prefix {SCHEME} voranstellen",
                 type: "Bool",
                 default: true,
-                sublabel:
-                  "Speichert z. B. {BLF-CRYPT}$2y$... statt nur $2y$...",
               },
               {
                 name: "bcrypt_rounds",
@@ -87,8 +74,6 @@ const configuration_workflow = () =>
                 required: true,
                 default: "2y",
                 attributes: { options: ["2a", "2b", "2y"] },
-                sublabel:
-                  "Dovecot erwartet $2y$; fuer maximale Kompatibilitaet Standard belassen.",
               },
               {
                 name: "sha512_rounds",
@@ -104,7 +89,6 @@ const configuration_workflow = () =>
                 default: 25000,
                 attributes: { min: 1000, max: 10000000 },
               },
-              // Passwortpolicy
               {
                 name: "min_length",
                 label: "Passwortpolicy: Mindestlaenge",
@@ -142,8 +126,6 @@ const configuration_workflow = () =>
                 type: "Integer",
                 default: 3,
                 attributes: { min: 0, max: 4 },
-                sublabel:
-                  "0 = beliebig, 4 = sehr stark. Empfehlung: 3. Wird nur ausgewertet, wenn zxcvbn verfuegbar ist.",
               },
             ],
           }),
@@ -152,68 +134,80 @@ const configuration_workflow = () =>
   });
 
 // -----------------------------------------------------------------------------
-// Hilfsfunktionen zum Zusammenfuehren von Config + Feld-Attributen
+// Helpers
 // -----------------------------------------------------------------------------
 
-/** Merge Plugin-Config mit Feld-spezifischen Attributen (Feld gewinnt). */
-function mergeOpts(pluginCfg = {}, attrs = {}) {
+function mergeOpts(pluginCfg, attrs) {
+  const c = pluginCfg || {};
+  const a = attrs || {};
   return {
-    scheme:
-      attrs.scheme || attrs.default_scheme || pluginCfg.default_scheme || "BLF-CRYPT",
+    scheme: a.scheme || c.default_scheme || "BLF-CRYPT",
     withPrefix:
-      typeof attrs.with_prefix === "boolean"
-        ? attrs.with_prefix
-        : typeof pluginCfg.with_prefix === "boolean"
-        ? pluginCfg.with_prefix
+      typeof a.with_prefix === "boolean"
+        ? a.with_prefix
+        : typeof c.with_prefix === "boolean"
+        ? c.with_prefix
         : true,
-    bcryptRounds: attrs.bcrypt_rounds || pluginCfg.bcrypt_rounds || 12,
-    bcryptPrefix: attrs.bcrypt_prefix || pluginCfg.bcrypt_prefix || "2y",
-    sha512Rounds: attrs.sha512_rounds || pluginCfg.sha512_rounds || 5000,
-    pbkdf2Iterations:
-      attrs.pbkdf2_iterations || pluginCfg.pbkdf2_iterations || 25000,
+    bcryptRounds: a.bcrypt_rounds || c.bcrypt_rounds || 12,
+    bcryptPrefix: a.bcrypt_prefix || c.bcrypt_prefix || "2y",
+    sha512Rounds: a.sha512_rounds || c.sha512_rounds || 5000,
+    pbkdf2Iterations: a.pbkdf2_iterations || c.pbkdf2_iterations || 25000,
     pbkdf2KeyLen: 64,
     pbkdf2Digest: "sha512",
     allowUserChoice:
-      typeof attrs.allow_user_choice === "boolean"
-        ? attrs.allow_user_choice
-        : typeof pluginCfg.allow_user_choice === "boolean"
-        ? pluginCfg.allow_user_choice
+      typeof a.allow_user_choice === "boolean"
+        ? a.allow_user_choice
+        : typeof c.allow_user_choice === "boolean"
+        ? c.allow_user_choice
         : true,
   };
 }
 
-function mergePolicy(pluginCfg = {}, attrs = {}) {
+function mergePolicy(pluginCfg, attrs) {
+  const pick = (x, y, d) => (x !== undefined ? x : y !== undefined ? y : d);
+  const c = pluginCfg || {};
+  const a = attrs || {};
   return {
-    minLength: attrs.min_length ?? pluginCfg.min_length ?? 10,
-    requireUpper: attrs.require_upper ?? pluginCfg.require_upper ?? true,
-    requireLower: attrs.require_lower ?? pluginCfg.require_lower ?? true,
-    requireDigit: attrs.require_digit ?? pluginCfg.require_digit ?? true,
-    requireSymbol: attrs.require_symbol ?? pluginCfg.require_symbol ?? false,
-    minScore: attrs.min_score ?? pluginCfg.min_score ?? 3,
+    minLength: pick(a.min_length, c.min_length, 10),
+    requireUpper: pick(a.require_upper, c.require_upper, true),
+    requireLower: pick(a.require_lower, c.require_lower, true),
+    requireDigit: pick(a.require_digit, c.require_digit, true),
+    requireSymbol: pick(a.require_symbol, c.require_symbol, false),
+    minScore: pick(a.min_score, c.min_score, 3),
   };
 }
 
-// -----------------------------------------------------------------------------
-// Field-View: HTML-Renderer
-// -----------------------------------------------------------------------------
+function looksLikeHash(s) {
+  return (
+    typeof s === "string" &&
+    (/^\{[A-Z0-9-]+\}/.test(s) ||
+      /^\$2[aby]\$/.test(s) ||
+      /^\$6\$/.test(s) ||
+      /^\$1\$[^$]+\$\d+\$[0-9a-f]+$/i.test(s))
+  );
+}
 
-/**
- * Rendert den Eingabe-Block:
- *   - password input
- *   - optionales Schema-Dropdown
- *   - Staerke-Balken + Feedback (client-seitig via /plugins/public/... /strength.js)
- */
+function maskHash(s) {
+  if (typeof s !== "string") return "";
+  if (s.length <= 12) return "••••";
+  return s.slice(0, 6) + "…" + s.slice(-4);
+}
+
+function escapeAttrJson(obj) {
+  return JSON.stringify(obj).replace(/'/g, "&#39;");
+}
+
 function renderPlainEditor({
   name,
-  value,
   cls,
   schemes,
   defaultScheme,
   allowUserChoice,
-  policyJson,
+  policy,
 }) {
-  const id = `sc_pwd_${name}`;
-  const dropdown = allowUserChoice
+  const id = `sc_pwd_${(name || "field").replace(/[^A-Za-z0-9_]/g, "_")}`;
+
+  const schemeControl = allowUserChoice
     ? select(
         {
           name: `${name}__scheme`,
@@ -222,7 +216,10 @@ function renderPlainEditor({
           "data-pwtools-scheme": "1",
         },
         schemes.map((s) =>
-          option({ value: s, ...(s === defaultScheme ? { selected: true } : {}) }, s)
+          option(
+            { value: s, ...(s === defaultScheme ? { selected: true } : {}) },
+            s
+          )
         )
       )
     : input({ type: "hidden", name: `${name}__scheme`, value: defaultScheme });
@@ -235,7 +232,7 @@ function renderPlainEditor({
     `</div>`;
 
   return (
-    `<div class="pwtools-wrapper" data-pwtools-policy='${escapeJson(policyJson)}'>` +
+    `<div class="pwtools-wrapper" data-pwtools-policy='${escapeAttrJson(policy)}'>` +
     input({
       type: "password",
       class: `form-control ${cls || ""}`,
@@ -243,233 +240,95 @@ function renderPlainEditor({
       id,
       autocomplete: "new-password",
       "data-pwtools-input": "1",
-      ...(value ? { value } : {}),
     }) +
     (allowUserChoice
       ? `<label class="form-label small text-muted mt-1 mb-0" for="${id}_scheme">Hash-Schema</label>`
       : "") +
-    dropdown +
+    schemeControl +
     meter +
     `</div>`
   );
 }
 
-function escapeJson(obj) {
-  return JSON.stringify(obj).replace(/'/g, "&#39;");
-}
-
 // -----------------------------------------------------------------------------
-// Type-Definitionen
+// Plugin-Config Bridge fuer fieldviews (die selbst KEINE Config bekommen)
 // -----------------------------------------------------------------------------
 
-/**
- * "Password Plain" - virtueller String-Typ fuer das Eingabefeld.
- * Wird NICHT im Klartext gespeichert (leere Ausgabe beim show), sondern
- * ist der Ort, an dem eine Live-Staerke-Anzeige gezeigt wird.
- */
-const passwordPlainType = (pluginCfg) => ({
-  name: "Password Plain",
-  sql_name: "text",
-  fieldviews: {
-    with_strength: {
-      isEdit: true,
-      run: (nm, v, attrs = {}, cls) => {
-        const opts = mergeOpts(pluginCfg, attrs);
-        const policy = mergePolicy(pluginCfg, attrs);
-        return renderPlainEditor({
-          name: nm,
-          value: "", // Klartext nie zurueckspielen
-          cls,
-          schemes: SCHEMES,
-          defaultScheme: opts.scheme,
-          allowUserChoice: opts.allowUserChoice,
-          policyJson: policy,
-        });
-      },
-    },
-    show: {
-      isEdit: false,
-      run: () => "••••••••",
-    },
-    edit: {
-      // Alias fuer with_strength, damit Saltcorn's Default-Edit-View funktioniert
-      isEdit: true,
-      run: (nm, v, attrs = {}, cls) => {
-        const opts = mergeOpts(pluginCfg, attrs);
-        const policy = mergePolicy(pluginCfg, attrs);
-        return renderPlainEditor({
-          name: nm,
-          value: "",
-          cls,
-          schemes: SCHEMES,
-          defaultScheme: opts.scheme,
-          allowUserChoice: opts.allowUserChoice,
-          policyJson: policy,
-        });
-      },
-    },
-  },
-  read: (v) => (typeof v === "string" ? v : v == null ? undefined : String(v)),
-  attributes: [
-    {
-      name: "scheme",
-      label: "Hash-Schema (Override)",
+let pluginState = {};
+
+// -----------------------------------------------------------------------------
+// Fieldviews fuer bestehenden String-Typ
+// -----------------------------------------------------------------------------
+
+function fieldviewsFactory() {
+  return {
+    // Edit-View: Klartexteingabe mit Live-Staerke und Schema-Dropdown.
+    // Anwenden auf ein String-Feld z.B. namens "password_plain".
+    password_input: {
       type: "String",
-      required: false,
-      attributes: { options: ["", ...SCHEMES] },
-      sublabel:
-        "Optionaler Override des Standard-Schemas aus der Plugin-Config.",
+      isEdit: true,
+      description:
+        "Passwort-Eingabefeld mit Staerke-Anzeige und optionalem Hash-Schema-Dropdown.",
+      configFields: [
+        {
+          name: "scheme",
+          label: "Vorgabe Hash-Schema",
+          type: "String",
+          attributes: { options: ["", ...SCHEMES] },
+          sublabel: "Leer = Wert aus Plugin-Config verwenden.",
+        },
+        {
+          name: "allow_user_choice",
+          label: "Benutzer darf Schema waehlen",
+          type: "Bool",
+        },
+        {
+          name: "min_length",
+          label: "Min. Laenge (Override)",
+          type: "Integer",
+        },
+        {
+          name: "min_score",
+          label: "Min. zxcvbn Score (Override)",
+          type: "Integer",
+        },
+      ],
+      run: (nm, v, attrs, cls) => {
+        const opts = mergeOpts(pluginState, attrs || {});
+        const policy = mergePolicy(pluginState, attrs || {});
+        return renderPlainEditor({
+          name: nm,
+          cls,
+          schemes: SCHEMES,
+          defaultScheme: opts.scheme,
+          allowUserChoice: opts.allowUserChoice,
+          policy,
+        });
+      },
     },
-    {
-      name: "with_prefix",
-      label: 'Dovecot-Prefix "{SCHEME}" voranstellen (Override)',
-      type: "Bool",
-    },
-    {
-      name: "allow_user_choice",
-      label: "Benutzer darf Schema waehlen (Override)",
-      type: "Bool",
-    },
-    {
-      name: "min_length",
-      label: "Min. Laenge (Override)",
-      type: "Integer",
-    },
-    {
-      name: "min_score",
-      label: "Min. zxcvbn Score (Override)",
-      type: "Integer",
-    },
-  ],
-});
-
-/**
- * "Password Hash" - das eigentliche Zielfeld. Speichert einen String
- * und rendert eine Editieransicht identisch zu Password Plain, damit
- * man das Ziel-Feld direkt in Edit-Views einsetzen kann und der Wert
- * beim Absenden automatisch gehasht wird.
- */
-const passwordHashType = (pluginCfg) => ({
-  name: "Password Hash",
-  sql_name: "text",
-  fieldviews: {
-    // Zeigt den gespeicherten Hash maskiert an
-    show: {
+    // Show-View: maskierter Hash (fuer das Zielfeld "password_hash").
+    password_hash_show: {
+      type: "String",
       isEdit: false,
-      run: (s) =>
-        typeof s === "string" && s.length > 0
+      description:
+        "Zeigt einen Password-Hash maskiert (nur die ersten und letzten Zeichen).",
+      run: (v) =>
+        typeof v === "string" && v.length > 0
           ? span(
-              { class: "font-monospace small text-muted", title: s },
-              maskHash(s)
+              { class: "font-monospace small text-muted", title: v },
+              maskHash(v)
             )
           : "",
     },
-    // Zeigt den vollen Hash (fuer Admin-Debug)
-    show_raw: {
-      isEdit: false,
-      run: (s) =>
-        typeof s === "string"
-          ? span({ class: "font-monospace small" }, s)
-          : "",
-    },
-    // Kern-Field-View: Klartext-Eingabe -> wird beim submit automatisch gehasht
-    hash_from_plain: {
-      isEdit: true,
-      run: (nm, v, attrs = {}, cls) => {
-        const opts = mergeOpts(pluginCfg, attrs);
-        const policy = mergePolicy(pluginCfg, attrs);
-        return renderPlainEditor({
-          name: nm,
-          value: "",
-          cls,
-          schemes: SCHEMES,
-          defaultScheme: opts.scheme,
-          allowUserChoice: opts.allowUserChoice,
-          policyJson: policy,
-        });
-      },
-    },
-    // Roh-Edit fuer den Fall, dass ein Admin einen fertigen Hash einfuegt
-    edit_raw: {
-      isEdit: true,
-      run: (nm, v, attrs, cls) =>
-        input({
-          type: "text",
-          class: `form-control font-monospace ${cls || ""}`,
-          name: nm,
-          ...(v ? { value: v } : {}),
-        }),
-    },
-  },
-  read: (v) => (typeof v === "string" ? v : v == null ? undefined : String(v)),
-  attributes: [
-    {
-      name: "scheme",
-      label: "Hash-Schema (Override)",
-      type: "String",
-      required: false,
-      attributes: { options: ["", ...SCHEMES] },
-    },
-    {
-      name: "with_prefix",
-      label: 'Dovecot-Prefix "{SCHEME}" voranstellen (Override)',
-      type: "Bool",
-    },
-    {
-      name: "allow_user_choice",
-      label: "Benutzer darf Schema waehlen (Override)",
-      type: "Bool",
-    },
-    {
-      name: "bcrypt_rounds",
-      label: "BLF-CRYPT Rounds (Override)",
-      type: "Integer",
-    },
-    {
-      name: "sha512_rounds",
-      label: "SHA512-CRYPT Rounds (Override)",
-      type: "Integer",
-    },
-    {
-      name: "pbkdf2_iterations",
-      label: "PBKDF2 Iterations (Override)",
-      type: "Integer",
-    },
-    {
-      name: "min_length",
-      label: "Min. Laenge (Override)",
-      type: "Integer",
-    },
-    {
-      name: "min_score",
-      label: "Min. zxcvbn Score (Override)",
-      type: "Integer",
-    },
-  ],
-  /**
-   * Wichtig: das Feld wird per Form eingelesen. Wenn der Wert bereits wie
-   * ein Hash aussieht, uebernehmen wir ihn unveraendert; andernfalls wird
-   * er in der Trigger-Action / im Save-Hook (siehe README) gehasht.
-   * Ein synchrones read() reicht hier nicht fuer Async-Hashing - daher
-   * empfehlen wir die Action `hash_password_field` als "Update" Trigger.
-   */
-});
-
-function maskHash(s) {
-  if (s.length <= 12) return "••••";
-  return s.slice(0, 6) + "…" + s.slice(-4);
+  };
 }
 
 // -----------------------------------------------------------------------------
-// Server-Funktionen (aus Code-Triggern nutzbar)
+// Server-Funktionen (in Code-Actions und Formeln nutzbar)
 // -----------------------------------------------------------------------------
 
-function makeFunctions(pluginCfg) {
+function functionsFactory(config) {
   return {
-    /**
-     * pwtools_hash(plain, {scheme?, with_prefix?, ...})
-     * Rueckgabe: String (Hash).
-     */
     pwtools_hash: {
       description:
         "Hasht ein Klartext-Passwort mit dem konfigurierten Schema (BLF-CRYPT / SHA512-CRYPT / PBKDF2).",
@@ -478,55 +337,46 @@ function makeFunctions(pluginCfg) {
         { name: "options", type: "JSON" },
       ],
       run: async (plain, options) => {
-        const opts = mergeOpts(pluginCfg, options || {});
+        const opts = mergeOpts(config, options || {});
         return await hashPassword(plain, opts);
       },
     },
-    /**
-     * pwtools_verify(plain, stored) -> Bool
-     */
     pwtools_verify: {
-      description: "Prueft ein Klartext-Passwort gegen einen gespeicherten Hash.",
+      description:
+        "Prueft ein Klartext-Passwort gegen einen gespeicherten Hash.",
       arguments: [
         { name: "plain", type: "String" },
         { name: "stored", type: "String" },
       ],
       run: async (plain, stored) => await verifyPassword(plain, stored),
     },
-    /**
-     * pwtools_strength(plain) -> {valid, score, problems, suggestions}
-     */
     pwtools_strength: {
-      description: "Berechnet die Passwortstaerke (zxcvbn + Regelpruefung).",
+      description:
+        "Berechnet die Passwortstaerke (zxcvbn + Regelpruefung).",
       arguments: [{ name: "plain", type: "String" }],
-      run: (plain) => evaluate(plain, mergePolicy(pluginCfg, {})),
+      run: (plain) => evaluate(plain, mergePolicy(config, {})),
     },
   };
 }
 
 // -----------------------------------------------------------------------------
-// Action-Trigger: bequem als "Update" oder "InsertRow" Trigger einsetzbar
+// Trigger-Action: hasht das Klartextfeld beim Insert/Update
 // -----------------------------------------------------------------------------
 
-function makeActions(pluginCfg) {
+function actionsFactory(config) {
   return {
     hash_password_field: {
       description:
-        "Liest ein Klartext-Feld (Default: password_plain), hasht es und schreibt " +
+        "Liest ein Klartextfeld (Default: password_plain), hasht es und schreibt " +
         "das Ergebnis in ein Zielfeld (Default: password_hash). Danach wird das " +
-        "Klartext-Feld geleert.",
-      configFields: async ({ table }) => {
-        const stringFields = (table?.fields || [])
-          .filter((f) => f.type && (f.type.name === "String" || f.type === "String" || f.type.name === "Password Plain"))
-          .map((f) => f.name);
-        const hashFields = (table?.fields || [])
-          .filter(
-            (f) =>
-              f.type &&
-              (f.type.name === "String" ||
-                f.type === "String" ||
-                f.type.name === "Password Hash")
-          )
+        "Klartextfeld optional geleert.",
+      configFields: ({ table }) => {
+        const allFields = (table && table.fields) || [];
+        const options = allFields
+          .filter((f) => {
+            const t = (f.type && (f.type.name || f.type)) || "";
+            return t === "String";
+          })
           .map((f) => f.name);
         return [
           {
@@ -535,7 +385,7 @@ function makeActions(pluginCfg) {
             type: "String",
             required: true,
             default: "password_plain",
-            attributes: { options: stringFields.length ? stringFields : ["password_plain"] },
+            attributes: { options: options.length ? options : ["password_plain"] },
           },
           {
             name: "hash_field",
@@ -543,17 +393,17 @@ function makeActions(pluginCfg) {
             type: "String",
             required: true,
             default: "password_hash",
-            attributes: { options: hashFields.length ? hashFields : ["password_hash"] },
+            attributes: { options: options.length ? options : ["password_hash"] },
           },
           {
             name: "scheme",
-            label: "Schema (leer = aus Formular / Default)",
+            label: "Schema (leer = Auswahl im Formular / Default)",
             type: "String",
             attributes: { options: ["", ...SCHEMES] },
           },
           {
             name: "enforce_policy",
-            label: "Passwortpolicy erzwingen (Abbruch bei Verstoss)",
+            label: "Passwortpolicy erzwingen",
             type: "Bool",
             default: true,
           },
@@ -565,32 +415,39 @@ function makeActions(pluginCfg) {
           },
         ];
       },
-      run: async ({ row, table, configuration = {} }) => {
-        const plainField = configuration.plain_field || "password_plain";
-        const hashField = configuration.hash_field || "password_hash";
-        const plain = row?.[plainField];
+      run: async ({ row, table, configuration }) => {
+        const cfg = configuration || {};
+        const plainField = cfg.plain_field || "password_plain";
+        const hashField = cfg.hash_field || "password_hash";
+        const plain = row && row[plainField];
 
         if (!plain || typeof plain !== "string") {
-          return { success: true, notice: "Kein Klartextpasswort - uebersprungen." };
+          return { notice: "Kein Klartextpasswort - uebersprungen." };
         }
 
         const scheme =
-          configuration.scheme ||
-          row?.[`${plainField}__scheme`] ||
-          pluginCfg.default_scheme ||
+          cfg.scheme ||
+          (row && row[`${plainField}__scheme`]) ||
+          (config && config.default_scheme) ||
           "BLF-CRYPT";
 
-        // Wenn bereits ein gueltiger Hash im Klartextfeld steckt: unveraendert speichern.
         if (looksLikeHash(plain)) {
           const update = { [hashField]: plain };
-          if (configuration.clear_plain !== false) update[plainField] = "";
-          if (table?.updateRow) await table.updateRow(update, row.id);
-          return { success: true };
+          if (cfg.clear_plain !== false) update[plainField] = "";
+          if (
+            table &&
+            typeof table.updateRow === "function" &&
+            row &&
+            row.id
+          ) {
+            await table.updateRow(update, row.id);
+          }
+          return { notice: "Bestehender Hash uebernommen." };
         }
 
-        const policy = mergePolicy(pluginCfg, {});
+        const policy = mergePolicy(config, {});
         const check = evaluate(plain, policy);
-        if (configuration.enforce_policy !== false && !check.valid) {
+        if (cfg.enforce_policy !== false && !check.valid) {
           return {
             error:
               "Passwort erfuellt die Policy nicht: " +
@@ -598,42 +455,34 @@ function makeActions(pluginCfg) {
           };
         }
 
-        const opts = mergeOpts(pluginCfg, { scheme });
+        const opts = mergeOpts(config, { scheme });
         const hashed = await hashPassword(plain, opts);
 
         const update = { [hashField]: hashed };
-        if (configuration.clear_plain !== false) update[plainField] = "";
-        if (table?.updateRow) await table.updateRow(update, row.id);
-
-        return { success: true, notice: `Passwort als ${scheme} gespeichert.` };
+        if (cfg.clear_plain !== false) update[plainField] = "";
+        if (table && typeof table.updateRow === "function" && row && row.id) {
+          await table.updateRow(update, row.id);
+        }
+        return { notice: `Passwort als ${scheme} gespeichert.` };
       },
     },
   };
 }
 
-function looksLikeHash(s) {
-  return (
-    /^\{[A-Z0-9-]+\}/.test(s) ||
-    /^\$2[aby]\$/.test(s) ||
-    /^\$6\$/.test(s) ||
-    /^\$1\$[^$]+\$\d+\$[0-9a-f]+$/i.test(s)
-  );
-}
-
 // -----------------------------------------------------------------------------
-// Routes: eine kleine JSON-API fuer Live-Staerke (nutzt zxcvbn serverseitig)
+// Optionaler HTTP-Endpoint
 // -----------------------------------------------------------------------------
 
-function makeRoutes(pluginCfg) {
+function routesFactory(config) {
   return [
     {
       url: "/pwtools/strength",
       method: "post",
-      callback: async ({ req, res }) => {
+      callback: async (req, res) => {
         try {
-          const { password, policy } = req.body || {};
-          const merged = mergePolicy(pluginCfg, policy || {});
-          const result = evaluate(password || "", merged);
+          const body = req.body || {};
+          const merged = mergePolicy(config, body.policy || {});
+          const result = evaluate(body.password || "", merged);
           res.json(result);
         } catch (e) {
           res.status(400).json({ error: String(e && e.message) });
@@ -647,27 +496,39 @@ function makeRoutes(pluginCfg) {
 // Module-Export
 // -----------------------------------------------------------------------------
 
-module.exports = (pluginCfg = {}) => ({
+module.exports = {
   sc_plugin_api_version: 1,
-  plugin_name: "saltcorn-password-tools",
+  plugin_name: PLUGIN_NAME,
+  ready_for_mobile: false,
+
   configuration_workflow,
-  types: [passwordPlainType(pluginCfg), passwordHashType(pluginCfg)],
-  functions: makeFunctions(pluginCfg),
-  actions: makeActions(pluginCfg),
-  routes: makeRoutes(pluginCfg),
-  // Header: laedt zxcvbn (CDN) + unser client-seitiges Skript
-  headers: [
+
+  // Fieldviews fuer den bestehenden String-Typ
+  fieldviews: fieldviewsFactory,
+
+  // Actions/Functions/Routes bekommen die Config an der Factory-Signatur
+  actions: actionsFactory,
+  functions: functionsFactory,
+  routes: routesFactory,
+
+  headers: () => [
     {
       script:
         "https://cdnjs.cloudflare.com/ajax/libs/zxcvbn/4.4.2/zxcvbn.js",
     },
     {
-      script: "/plugins/public/saltcorn-password-tools/strength-client.js",
+      script: `/plugins/public/${PLUGIN_NAME}/strength-client.js`,
     },
   ],
-  // Statisch ausgelieferte Dateien (public/*)
-  serve_dependencies: {
-    "/plugins/public/saltcorn-password-tools": path.join(__dirname, "public"),
-  },
-});
 
+  // Wird beim Laden und nach Konfigurationsaenderungen aufgerufen und stellt
+  // die Plugin-Config den (config-losen) fieldviews via Modul-Slot bereit.
+  onLoad: async (config) => {
+    pluginState = config || {};
+  },
+};
+
+// Named exports fuer direkte Nutzung / Tests
+module.exports.hashPassword = hashPassword;
+module.exports.verifyPassword = verifyPassword;
+module.exports.evaluate = evaluate;

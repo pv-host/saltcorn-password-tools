@@ -50,27 +50,28 @@ saltcorn install-plugin -n saltcorn-password-tools \
 
 ### 1. Tabelle vorbereiten
 
-Lege in der Ziel-Tabelle zwei Felder an:
+Lege in der Ziel-Tabelle **zwei String-Felder** an:
 
-| Feldname         | Typ                | Zweck                                            |
-| ---------------- | ------------------ | ------------------------------------------------ |
-| `password_plain` | `Password Plain`   | Eingabefeld (im Editor sichtbar, nicht gespeichert im Klartext) |
-| `password_hash`  | `Password Hash`    | Gespeicherter Hash                               |
+| Feldname         | Typ      | Zweck                                                              |
+| ---------------- | -------- | ------------------------------------------------------------------ |
+| `password_plain` | `String` | Eingabefeld (im Editor sichtbar, wird nach dem Hashen wieder geleert) |
+| `password_hash`  | `String` | Gespeicherter Hash                                                 |
 
-> Die Feldnamen sind Konvention und in der Action konfigurierbar — du kannst
-> auch bestehende `String`-Felder verwenden.
+> Beide Felder sind normale `String`-Felder. Das Plugin erweitert den
+> String-Typ um zwei neue Field-Views (`password_input`, `password_hash_show`).
 
 ### 2. Edit-View konfigurieren
 
-Setze für `password_plain` die Field-View **`with_strength`** ein.
-Sie zeigt:
+Setze in der Edit-View für `password_plain` die Field-View **`password_input`**
+(zu finden im Dropdown der verfügbaren Field-Views). Sie zeigt:
 
-- ein Passwortfeld
+- ein Passwortfeld (`<input type="password">`)
 - ein optionales Schema-Dropdown (`BLF-CRYPT` / `SHA512-CRYPT` / `PBKDF2`)
 - einen live aktualisierten Stärke-Balken mit Feedback
 
-Das Feld `password_hash` wird in der Edit-View typischerweise **nicht** angezeigt.
-In Show-Views nutzt du die Field-View `show` (maskiert) oder `show_raw` (Debug).
+Für `password_hash` in Show-Views die Field-View **`password_hash_show`** wählen
+(zeigt den Hash maskiert). In Edit-Views braucht `password_hash` in der Regel
+gar nicht angezeigt zu werden.
 
 ### 3. Automatisches Hashen einrichten
 
