@@ -95,13 +95,19 @@ gar nicht angezeigt zu werden.
 
 Erstelle einen **Trigger** in der Ziel-Tabelle:
 
-- **When:** `Insert` und `Update`
+- **When:** `Validate` (empfohlen ab 0.3.1) — wird VOR dem Insert/Update
+  ausgeführt und blockiert das Speichern, wenn die Passwortpolicy verletzt
+  ist. Der Klartext gelangt so nie in die Datenbank.
 - **Action:** `hash_password_field`
 - Konfiguration:
   - Quellfeld: `password_plain`
   - Zielfeld: `password_hash`
   - Passwortpolicy erzwingen: ✅
   - Klartextfeld nach Hashen leeren: ✅
+
+Alternativ können weiterhin `Insert`/`Update`-Trigger verwendet werden. Der
+Effekt ist gleich, nur landet der Klartext dann kurzzeitig in der Zeile bevor
+der Trigger ihn ersetzt.
 
 Damit wird bei jedem Speichern der Klartext gehasht, ins Hash-Feld geschrieben
 und das Klartextfeld anschließend geleert.

@@ -311,6 +311,48 @@ function fieldviewsFactory() {
       isEdit: true,
       description:
         "Passwort-Eingabefeld mit Staerke-Anzeige, optionalem Hash-Schema-Dropdown und optionaler Passwort-Bestaetigung.",
+      // readFromFormRecord laeuft VOR dem DB-Write (siehe Field.validate)
+      // und ist unser primaerer serverseitiger Validierungspfad.
+      // Wir lesen das Klartextpasswort + optional __confirm + __scheme und
+      // pruefen Bestaetigung und Policy. Bei Fehler geben wir null zurueck,
+      // damit Field.validate ein Fehler-Objekt liefert (Feld gilt als
+      // "nicht lesbar") und das Formular blockiert wird.
+      readFromFormRecord: (rec, name) => {
+        if (!rec) return null;
+        const raw = rec[name];
+        if (raw === undefined || raw === null || raw === "") return raw;
+        const plain = String(raw);
+
+        // Wenn bereits ein fertiger Hash uebergeben wird (z.B. Import),
+        // ohne Confirm-Feld akzeptieren wir das unveraendert.
+        if (looksLikeHash(plain)) return plain;
+
+        // Confirm pruefen, sofern uebermittelt.
+        const confirmKey = name + "__confirm";
+        const confirmVal = rec[confirmKey];
+        if (
+          confirmVal !== undefined &&
+          confirmVal !== null &&
+          String(confirmVal) !== plain
+        ) {
+          // Fehlerkontext fuer den Validate-Trigger ablegen.
+          rec["__pwtools_error__" + name] =
+            "Passwortbestaetigung stimmt nicht mit Passwort ueberein.";
+          return null;
+        }
+
+        // Policy pruefen (Server-Seite, unabhaengig vom Client).
+        const policy = mergePolicy(pluginState, {});
+        const check = evaluate(plain, policy);
+        if (!check.valid) {
+          rec["__pwtools_error__" + name] =
+            "Passwort erfuellt die Policy nicht: " +
+            check.problems.join("; ");
+          return null;
+        }
+
+        return plain;
+      },
       configFields: [
         {
           name: "scheme",
@@ -483,25 +525,35 @@ function actionsFactory(config) {
           },
         ];
       },
-      run: async ({ row, table, configuration }) => {
+      run: async ({ row, table, configuration, old_row, updated_fields }) => {
         const cfg = configuration || {};
         const plainField = cfg.plain_field || "password_plain";
         const hashField = cfg.hash_field || "password_hash";
+
+        // Als Validate-Trigger enthaelt row die neuen Feldwerte (v_in);
+        // als Insert/Update-Trigger enthaelt row die eingefuegte Zeile.
         const plain = row && row[plainField];
+
+        // Zuerst: einen von readFromFormRecord im Fieldview vermerkten
+        // Fehler abfangen (Confirm-Mismatch oder Policy-Fail).
+        const preErrKey = "__pwtools_error__" + plainField;
+        if (row && row[preErrKey]) {
+          return { error: String(row[preErrKey]) };
+        }
 
         if (!plain || typeof plain !== "string") {
           return { notice: "Kein Klartextpasswort - uebersprungen." };
         }
 
-        // Serverseitige Bestaetigungspruefung: wenn ein Confirm-Feld mitgeschickt
-        // wurde und nicht uebereinstimmt, Abbruch (fangt Faelle ab, in denen die
-        // clientseitige Pruefung umgangen wurde).
-        const confirmVal = row && row[`${plainField}__confirm`];
+        // Serverseitige Bestaetigungspruefung (Fallback, falls das
+        // Fieldview nicht 'password_input' ist und __confirm dennoch
+        // durchkommt).
+        const confirmVal = row[`${plainField}__confirm`];
         if (
           confirmVal !== undefined &&
           confirmVal !== null &&
           confirmVal !== "" &&
-          confirmVal !== plain
+          String(confirmVal) !== plain
         ) {
           return {
             error:
@@ -511,26 +563,35 @@ function actionsFactory(config) {
 
         const scheme =
           cfg.scheme ||
-          (row && row[`${plainField}__scheme`]) ||
+          row[`${plainField}__scheme`] ||
           (config && config.default_scheme) ||
           "BLF-CRYPT";
 
+        // Fall 1: es ist schon ein Hash - unveraendert speichern.
         if (looksLikeHash(plain)) {
-          const update = { [hashField]: plain };
-          if (cfg.clear_plain !== false) update[plainField] = "";
-          // Confirm-Feld nie persistieren
-          update[`${plainField}__confirm`] = undefined;
+          // Bei Validate-Trigger: set_fields wird von Table.insertRow/updateRow
+          // in v_in gemergt und blockt den DB-Write nicht.
+          const setFields = { [hashField]: plain };
+          if (cfg.clear_plain !== false) setFields[plainField] = "";
+          // Extra-Formfelder rauswerfen (falls sie hier ankommen).
+          setFields[`${plainField}__confirm`] = undefined;
+          setFields[`${plainField}__scheme`] = undefined;
+
+          // Insert/Update-Trigger: nachtraeglich schreiben.
           if (
             table &&
             typeof table.updateRow === "function" &&
-            row &&
             row.id
           ) {
-            await table.updateRow(update, row.id);
+            const upd = { [hashField]: plain };
+            if (cfg.clear_plain !== false) upd[plainField] = "";
+            await table.updateRow(upd, row.id);
           }
-          return { notice: "Bestehender Hash uebernommen." };
+          return { notice: "Bestehender Hash uebernommen.", set_fields: setFields };
         }
 
+        // Fall 2: Policy pruefen (Server-Fallback fuer den Fall, dass das
+        // Fieldview readFromFormRecord nicht ausgefuehrt wurde).
         const policy = mergePolicy(config, {});
         const check = evaluate(plain, policy);
         if (cfg.enforce_policy !== false && !check.valid) {
@@ -541,16 +602,28 @@ function actionsFactory(config) {
           };
         }
 
+        // Fall 3: Hashen.
         const opts = mergeOpts(config, { scheme });
         const hashed = await hashPassword(plain, opts);
 
-        const update = { [hashField]: hashed };
-        if (cfg.clear_plain !== false) update[plainField] = "";
-        if (table && typeof table.updateRow === "function" && row && row.id) {
-          await table.updateRow(update, row.id);
-        }
-        return { notice: `Passwort als ${scheme} gespeichert.` };
+        const setFields = { [hashField]: hashed };
+        if (cfg.clear_plain !== false) setFields[plainField] = "";
+        setFields[`${plainField}__confirm`] = undefined;
+        setFields[`${plainField}__scheme`] = undefined;
 
+        // Insert/Update-Trigger: nachtraeglich schreiben.
+        if (table && typeof table.updateRow === "function" && row.id) {
+          const upd = { [hashField]: hashed };
+          if (cfg.clear_plain !== false) upd[plainField] = "";
+          await table.updateRow(upd, row.id);
+        }
+
+        // Als Validate-Trigger: set_fields wird von Saltcorn in v_in gemergt,
+        // sodass beim Insert direkt der Hash landet, nicht das Klartextpasswort.
+        return {
+          notice: `Passwort als ${scheme} gespeichert.`,
+          set_fields: setFields,
+        };
       },
     },
   };

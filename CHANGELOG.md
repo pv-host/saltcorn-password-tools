@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.1 — 2026-07-04
+
+### Fixed
+- **Passwort-Bestätigung wird nun serverseitig erzwungen.** Bisher wurde
+  `<feld>__confirm` vor dem DB-Insert verworfen (kein Tabellenfeld) und der
+  Trigger lief erst nach dem Insert. Die Prüfung erfolgt jetzt im Fieldview
+  `password_input` über `readFromFormRecord`, das laut Saltcorn-Feld-Validierung
+  **vor** dem DB-Write ausgeführt wird. Bei nicht passender Bestätigung wird
+  das Formular abgewiesen und der Fehler dem Feld angehängt.
+- **Policy-Erzwingung greift jetzt zuverlässig.** Auch bei umgangenem
+  Client-JS wird ein Passwort, das die Policy verletzt (Länge, Zeichenklassen,
+  zxcvbn-Score), bereits im Fieldview abgelehnt.
+- Trigger `hash_password_field` gibt nun `set_fields` mit dem Hash zurück.
+  Bei Verwendung als **Validate**-Trigger schreibt Saltcorn den Hash direkt
+  in die Tabelle statt das Klartext-Passwort — dies ist die neue empfohlene
+  Konfiguration.
+- Client-JS blockiert Submit robuster: Zusätzlich zum `submit`-Event werden
+  Klicks auf Submit-Buttons in der Capture-Phase abgefangen, damit die
+  Blockade auch bei AJAX-Submits und Direct-Button-Handlern greift.
+
+### Migration
+- **Empfehlung**: den Trigger `hash_password_field` auf **`Validate`**
+  umstellen (statt `Insert`/`Update`). Dann wird das Klartextpasswort
+  garantiert nie in der Datenbank landen und Policy-Verletzungen blockieren
+  den Datensatz.
+- Bestehende Insert/Update-Trigger funktionieren weiterhin, prüfen die
+  Policy aber jetzt zuverlässig (dank neuem Fieldview-Pfad).
+
+### Compatibility
+- Rückwärtskompatibel. Keine Config- oder Feldänderungen nötig.
+
 ## 0.3.0 — 2026-07-04
 
 ### Added

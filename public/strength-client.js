@@ -151,47 +151,79 @@
       confirmInput.addEventListener("input", checkConfirm);
       confirmInput.addEventListener("blur", checkConfirm);
 
-      // Submit-Blockade beim umschliessenden Form
+      // Submit-Blockade beim umschliessenden Form (fuer klassischen und AJAX-Submit).
       const form = input.closest("form");
       if (form && !form.dataset.pwtoolsSubmitBound) {
         form.dataset.pwtoolsSubmitBound = "1";
+
+        // 1) Klassisches submit-Event (capture, damit wir vor Saltcorn-Handlern greifen).
         form.addEventListener(
           "submit",
           function (ev) {
-            // Alle Wrappers mit aktivem Confirm im Form pruefen
-            const dirty = form.querySelectorAll(
-              '.pwtools-wrapper[data-pwtools-confirm="1"]'
-            );
-            for (let i = 0; i < dirty.length; i++) {
-              const w = dirty[i];
-              const p = w.querySelector("[data-pwtools-input]");
-              const c = w.querySelector("[data-pwtools-confirm-input]");
-              if (!p || !c) continue;
-              const pv = p.value || "";
-              const cv = c.value || "";
-              if (pv && pv !== cv) {
-                ev.preventDefault();
-                ev.stopPropagation();
-                const msg = w.querySelector(".pwtools-confirm-msg");
-                if (msg) {
-                  msg.textContent = "Passwoerter stimmen nicht ueberein";
-                  msg.classList.remove("text-success");
-                  msg.classList.add("text-danger");
-                }
-                c.classList.add("is-invalid");
-                c.focus();
-                return false;
-              }
+            if (!validateAllPwWrappers(form)) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              if (typeof ev.stopImmediatePropagation === "function")
+                ev.stopImmediatePropagation();
+              return false;
             }
           },
           true
         );
+
+        // 2) Klick auf submit/save-Buttons abfangen (Saltcorn nutzt teils
+        // direkte Button-Handler statt echtes form.submit()).
+        const submitButtons = form.querySelectorAll(
+          'button[type="submit"], input[type="submit"], button[onclick*="submit"], .btn-primary'
+        );
+        for (let i = 0; i < submitButtons.length; i++) {
+          submitButtons[i].addEventListener(
+            "click",
+            function (ev) {
+              if (!validateAllPwWrappers(form)) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (typeof ev.stopImmediatePropagation === "function")
+                  ev.stopImmediatePropagation();
+                return false;
+              }
+            },
+            true
+          );
+        }
       }
     }
 
     // Initial render
     render(input.value || "");
     if (requireConfirm) checkConfirm();
+  }
+
+  function validateAllPwWrappers(form) {
+    const dirty = form.querySelectorAll(
+      '.pwtools-wrapper[data-pwtools-confirm="1"]'
+    );
+    let ok = true;
+    for (let i = 0; i < dirty.length; i++) {
+      const w = dirty[i];
+      const p = w.querySelector("[data-pwtools-input]");
+      const c = w.querySelector("[data-pwtools-confirm-input]");
+      if (!p || !c) continue;
+      const pv = p.value || "";
+      const cv = c.value || "";
+      if (pv && pv !== cv) {
+        const msg = w.querySelector(".pwtools-confirm-msg");
+        if (msg) {
+          msg.textContent = "Passwoerter stimmen nicht ueberein";
+          msg.classList.remove("text-success");
+          msg.classList.add("text-danger");
+        }
+        c.classList.add("is-invalid");
+        c.focus();
+        ok = false;
+      }
+    }
+    return ok;
   }
 
   function scan() {
