@@ -95,7 +95,7 @@ gar nicht angezeigt zu werden.
 
 Erstelle einen **Trigger** in der Ziel-Tabelle:
 
-- **When:** `Validate` (ab 0.3.2 zwingend erforderlich, wenn Bugs geblockt
+- **When:** `Validate` (ab 0.3.3 zwingend erforderlich, wenn Bugs geblockt
   werden sollen) — läuft VOR dem Insert/Update und kann durch die Rückgabe
   von `{error}` das Speichern verhindern. Damit blockieren Confirm-Mismatch
   und Policy-Verletzung den Datensatz vollständig, und der Klartext gelangt

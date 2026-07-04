@@ -1,16 +1,25 @@
 # Changelog
 
-## 0.3.2 — 2026-07-04
+## 0.3.3 — 2026-07-04
 
-### Fixed — echter Fix für Passwortbestätigung, Policy, Feld-Schema und Insert-Regression
+### Fixed — DB-Insert-Regression
 - **DB-Insert-Fehler `column "password_plain__confirm" of relation ... does not exist` behoben.**
   Der Trigger setzte `set_fields[<feld>__confirm] = undefined` und
   `set_fields[<feld>__scheme] = undefined`, um die Formularzusatzfelder aus
   der zu speichernden Row zu entfernen. `Object.assign` übernimmt aber auch
   `undefined`-Properties, sodass der pg-Client die nicht existierende Spalte
-  in die INSERT-Query aufnahm. 0.3.2 verwendet stattdessen `delete row[...]`
+  in die INSERT-Query aufnahm. 0.3.3 verwendet stattdessen `delete row[...]`
   am Anfang der Trigger-Run-Funktion und lässt die Extra-Keys ganz weg.
+- Regression-Test in `test/validation.test.js` ergänzt, der explizit prüft,
+  dass `set_fields` weder `__confirm` noch `__scheme` als Keys enthält.
 
+## 0.3.2 — 2026-07-04
+
+> **Hinweis:** 0.3.2 hatte noch die `set_fields[...] = undefined`-Regression,
+> die zum DB-Fehler `column "password_plain__confirm" of relation ... does not
+> exist` geführt hat. Bitte direkt auf **0.3.3** aktualisieren.
+
+### Fixed — echter Fix für Passwortbestätigung, Policy und Feld-Schema
 - **Passwortbestätigung wird jetzt serverseitig zuverlässig durchgesetzt.**
   In 0.3.1 gab `readFromFormRecord` bei einem Mismatch `null` zurück. Bei
   nicht-required Feldern behandelt Saltcorn `readval===null` allerdings als
