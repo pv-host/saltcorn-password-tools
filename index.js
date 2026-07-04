@@ -582,15 +582,23 @@ function actionsFactory(config) {
           (config && config.default_scheme) ||
           "BLF-CRYPT";
 
+        // Extra-Formfelder aus row entfernen, damit sie nie in eine
+        // DB-Insert/Update-Anfrage geraten. Object.assign mit
+        // {key: undefined} wuerde die Property NICHT loeschen, sondern
+        // den Wert auf undefined setzen — der pg-Client sendet die Spalte
+        // dann trotzdem und die DB antwortet mit
+        // "column \"...__confirm\" of relation ... does not exist".
+        if (row && typeof row === "object") {
+          delete row[`${plainField}__confirm`];
+          delete row[`${plainField}__scheme`];
+        }
+
         // Fall 1: es ist schon ein Hash - unveraendert speichern.
         if (looksLikeHash(plain)) {
           // Bei Validate-Trigger: set_fields wird von Table.insertRow/updateRow
           // in v_in gemergt und blockt den DB-Write nicht.
           const setFields = { [hashField]: plain };
           if (cfg.clear_plain !== false) setFields[plainField] = "";
-          // Extra-Formfelder rauswerfen (falls sie hier ankommen).
-          setFields[`${plainField}__confirm`] = undefined;
-          setFields[`${plainField}__scheme`] = undefined;
 
           // Insert/Update-Trigger: nachtraeglich schreiben.
           if (
@@ -623,8 +631,6 @@ function actionsFactory(config) {
 
         const setFields = { [hashField]: hashed };
         if (cfg.clear_plain !== false) setFields[plainField] = "";
-        setFields[`${plainField}__confirm`] = undefined;
-        setFields[`${plainField}__scheme`] = undefined;
 
         // Insert/Update-Trigger: nachtraeglich schreiben.
         if (table && typeof table.updateRow === "function" && row.id) {

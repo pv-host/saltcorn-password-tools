@@ -277,6 +277,38 @@ test("Trigger: bestehender Hash wird durchgereicht", async () => {
   assert.equal(res.set_fields.password_hash, hash);
 });
 
+test("Trigger: set_fields enthaelt KEINE Extra-Formfelder (__confirm, __scheme)", async () => {
+  // Regression-Test fuer 0.3.2-Bugfix: set_fields[<name>__confirm] = undefined
+  // fuehrte dazu, dass pg die Spalte in die INSERT-Query aufnahm und mit
+  // "column \"...__confirm\" of relation ... does not exist" ablehnte.
+  const trigger = getTrigger();
+  const res = await trigger.run({
+    row: {
+      password_plain: "SehrSicher99xy",
+      password_plain__confirm: "SehrSicher99xy",
+      password_plain__scheme: "BLF-CRYPT",
+    },
+    table: null,
+    configuration: {
+      plain_field: "password_plain",
+      hash_field: "password_hash",
+      enforce_policy: true,
+      clear_plain: true,
+    },
+  });
+  assert.ok(!res.error, "Kein Fehler erwartet: " + JSON.stringify(res));
+  assert.ok(res.set_fields, "set_fields sollte gesetzt sein");
+  const keys = Object.keys(res.set_fields);
+  assert.ok(
+    !keys.includes("password_plain__confirm"),
+    "set_fields darf __confirm nicht enthalten, hat: " + JSON.stringify(keys)
+  );
+  assert.ok(
+    !keys.includes("password_plain__scheme"),
+    "set_fields darf __scheme nicht enthalten, hat: " + JSON.stringify(keys)
+  );
+});
+
 test("Trigger: leeres Klartextfeld -> notice, kein Fehler, keine Aktion", async () => {
   const trigger = getTrigger();
   const res = await trigger.run({
