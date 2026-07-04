@@ -1,9 +1,13 @@
 /**
- * saltcorn-password-tools — Client-side strength meter.
+ * saltcorn-password-tools — Client-side strength meter and confirm-check.
  *
  * Suche alle .pwtools-wrapper im DOM und binde Input-Listener.
  * Nutzt zxcvbn (vom Plugin ueber CDN geladen) plus die konfigurierten
  * Policy-Regeln (data-pwtools-policy JSON-Attribut auf .pwtools-wrapper).
+ *
+ * Wenn data-pwtools-confirm="1" gesetzt ist, wird zusaetzlich das
+ * Bestaetigungsfeld gegen das Primaerfeld geprueft und das umgebende
+ * <form> beim Submit blockiert, falls beide nicht identisch sind.
  */
 (function () {
   "use strict";
@@ -22,12 +26,14 @@
     wrapper.dataset.pwtoolsInit = "1";
 
     const input = wrapper.querySelector("[data-pwtools-input]");
+    const confirmInput = wrapper.querySelector("[data-pwtools-confirm-input]");
     const meter = wrapper.querySelector(".pwtools-strength");
     if (!input || !meter) return;
 
     const bar = meter.querySelector(".progress-bar");
     const label = meter.querySelector(".pwtools-strength-label");
     const feedback = meter.querySelector(".pwtools-strength-feedback");
+    const confirmMsg = wrapper.querySelector(".pwtools-confirm-msg");
 
     let policy = {};
     try {
@@ -35,6 +41,9 @@
     } catch (_e) {
       policy = {};
     }
+
+    const requireConfirm =
+      wrapper.getAttribute("data-pwtools-confirm") === "1" && !!confirmInput;
 
     function evalRules(pw) {
       const problems = [];
@@ -50,6 +59,46 @@
       if (policy.requireSymbol && !/[^A-Za-z0-9]/.test(pw))
         problems.push("Sonderzeichen fehlt");
       return { problems };
+    }
+
+    function checkConfirm() {
+      if (!requireConfirm) return true;
+      const a = input.value || "";
+      const b = confirmInput.value || "";
+
+      if (!a && !b) {
+        setConfirmState("neutral", "");
+        return false;
+      }
+      if (!b) {
+        setConfirmState("neutral", "Bitte Passwort wiederholen");
+        return false;
+      }
+      if (a !== b) {
+        setConfirmState("mismatch", "Passwoerter stimmen nicht ueberein");
+        return false;
+      }
+      setConfirmState("match", "Passwoerter stimmen ueberein");
+      return true;
+    }
+
+    function setConfirmState(state, text) {
+      if (!confirmMsg) return;
+      confirmMsg.textContent = text;
+      if (state === "mismatch") {
+        confirmMsg.classList.remove("text-success");
+        confirmMsg.classList.add("text-danger");
+        confirmInput.classList.add("is-invalid");
+        confirmInput.classList.remove("is-valid");
+      } else if (state === "match") {
+        confirmMsg.classList.remove("text-danger");
+        confirmMsg.classList.add("text-success");
+        confirmInput.classList.remove("is-invalid");
+        confirmInput.classList.add("is-valid");
+      } else {
+        confirmMsg.classList.remove("text-danger", "text-success");
+        confirmInput.classList.remove("is-invalid", "is-valid");
+      }
     }
 
     function render(pw) {
@@ -95,10 +144,54 @@
 
     input.addEventListener("input", function () {
       render(input.value);
+      checkConfirm();
     });
 
-    // Initial render (fuer den Fall, dass der Browser Autofill befuellt)
+    if (requireConfirm) {
+      confirmInput.addEventListener("input", checkConfirm);
+      confirmInput.addEventListener("blur", checkConfirm);
+
+      // Submit-Blockade beim umschliessenden Form
+      const form = input.closest("form");
+      if (form && !form.dataset.pwtoolsSubmitBound) {
+        form.dataset.pwtoolsSubmitBound = "1";
+        form.addEventListener(
+          "submit",
+          function (ev) {
+            // Alle Wrappers mit aktivem Confirm im Form pruefen
+            const dirty = form.querySelectorAll(
+              '.pwtools-wrapper[data-pwtools-confirm="1"]'
+            );
+            for (let i = 0; i < dirty.length; i++) {
+              const w = dirty[i];
+              const p = w.querySelector("[data-pwtools-input]");
+              const c = w.querySelector("[data-pwtools-confirm-input]");
+              if (!p || !c) continue;
+              const pv = p.value || "";
+              const cv = c.value || "";
+              if (pv && pv !== cv) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const msg = w.querySelector(".pwtools-confirm-msg");
+                if (msg) {
+                  msg.textContent = "Passwoerter stimmen nicht ueberein";
+                  msg.classList.remove("text-success");
+                  msg.classList.add("text-danger");
+                }
+                c.classList.add("is-invalid");
+                c.focus();
+                return false;
+              }
+            }
+          },
+          true
+        );
+      }
+    }
+
+    // Initial render
     render(input.value || "");
+    if (requireConfirm) checkConfirm();
   }
 
   function scan() {
@@ -112,7 +205,6 @@
     scan();
   }
 
-  // Auch spaeter injizierte Formulare erfassen (z. B. Modal-Views)
   if (window.MutationObserver) {
     const obs = new MutationObserver(function () {
       scan();

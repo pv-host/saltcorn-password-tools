@@ -66,8 +66,26 @@ Setze in der Edit-View für `password_plain` die Field-View **`password_input`**
 (zu finden im Dropdown der verfügbaren Field-Views). Sie zeigt:
 
 - ein Passwortfeld (`<input type="password">`)
+- **ein zweites Bestätigungsfeld** direkt daneben (ab Bildschirmbreite `md`;
+  auf schmalen Screens untereinander) — kann in den Field-View-Einstellungen
+  über `require_confirm = false` abgeschaltet werden
 - ein optionales Schema-Dropdown (`BLF-CRYPT` / `SHA512-CRYPT` / `PBKDF2`)
 - einen live aktualisierten Stärke-Balken mit Feedback
+
+Der Submit-Button wird automatisch blockiert, solange die beiden Passwortfelder
+nicht übereinstimmen. Zusätzlich weist die Trigger-Action `hash_password_field`
+das Speichern serverseitig ab, falls das Bestätigungsfeld manipuliert wurde.
+
+Field-View-Konfigurationsoptionen (auf `password_input` klickbar):
+
+| Option | Default | Zweck |
+| --- | --- | --- |
+| `require_confirm` | `true` | Zweites Passwortfeld zur Bestätigung anzeigen |
+| `primary_label` | `Passwort` | Beschriftung des Passwortfelds |
+| `confirm_label` | `Passwort wiederholen` | Beschriftung des Bestätigungsfelds |
+| `scheme` | *(leer)* | Fest vorgegebenes Hash-Schema (überschreibt Plugin-Default) |
+| `allow_user_choice` | `true` | Schema-Dropdown im Formular anzeigen |
+| `min_length` / `min_score` | *(aus Plugin-Config)* | Policy-Overrides |
 
 Für `password_hash` in Show-Views die Field-View **`password_hash_show`** wählen
 (zeigt den Hash maskiert). In Edit-Views braucht `password_hash` in der Regel

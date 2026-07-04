@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0 — 2026-07-04
+
+### Added
+- **Passwort-Bestätigungsfeld** in der Field-View `password_input`.
+  Wenn aktiv (Default), zeigt die Field-View zwei nebeneinander liegende
+  Passwortfelder (Bootstrap-Grid: nebeneinander ab `md`, untereinander auf
+  schmalen Screens) und blockiert den Formular-Submit clientseitig, solange
+  beide nicht identisch sind.
+- Serverseitige Rückfall-Prüfung im Trigger `hash_password_field`: bricht
+  mit Fehlermeldung ab, wenn `<feld>__confirm` mitgeliefert wird und nicht
+  passt (fuer den Fall, dass die clientseitige Prüfung umgangen wird).
+- Neue Field-View-Config-Optionen:
+  - `require_confirm` (Bool, Default `true`) — Bestätigungsfeld anzeigen
+  - `primary_label` (String) — Beschriftung des Passwortfelds
+  - `confirm_label` (String) — Beschriftung des Bestätigungsfelds
+- Live-Statusanzeige unter dem Bestätigungsfeld:
+  grün „Stimmt überein“ / rot „Stimmen nicht überein“ mit
+  Bootstrap-Validation-States (`is-valid`/`is-invalid`).
+
+### Compatibility
+- Rückwärtskompatibel. Bestehende Views mit `password_input` erhalten
+  automatisch das Bestätigungsfeld. Wer das nicht will, setzt in den
+  Field-View-Config-Optionen `require_confirm` auf `false`.
+
 ## 0.2.0 — 2026-07-03
 
 ### Fixed / Changed

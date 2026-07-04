@@ -204,8 +204,12 @@ function renderPlainEditor({
   defaultScheme,
   allowUserChoice,
   policy,
+  requireConfirm,
+  confirmLabel,
+  primaryLabel,
 }) {
   const id = `sc_pwd_${(name || "field").replace(/[^A-Za-z0-9_]/g, "_")}`;
+  const confirmId = `${id}_confirm`;
 
   const schemeControl = allowUserChoice
     ? select(
@@ -231,18 +235,56 @@ function renderPlainEditor({
     `<ul class="pwtools-strength-feedback small text-danger mb-0 mt-1"></ul>` +
     `</div>`;
 
+  const primaryInput = input({
+    type: "password",
+    class: `form-control ${cls || ""}`,
+    name,
+    id,
+    autocomplete: "new-password",
+    "data-pwtools-input": "1",
+  });
+
+  if (!requireConfirm) {
+    return (
+      `<div class="pwtools-wrapper" data-pwtools-policy='${escapeAttrJson(policy)}' data-pwtools-confirm="0">` +
+      primaryInput +
+      (allowUserChoice
+        ? `<label class="form-label small text-muted mt-1 mb-0" for="${id}_scheme">Hash-Schema</label>`
+        : "") +
+      schemeControl +
+      meter +
+      `</div>`
+    );
+  }
+
+  const confirmInput = input({
+    type: "password",
+    class: `form-control ${cls || ""}`,
+    name: `${name}__confirm`,
+    id: confirmId,
+    autocomplete: "new-password",
+    "data-pwtools-confirm-input": "1",
+  });
+
+  const pLabel = primaryLabel || "Passwort";
+  const cLabel = confirmLabel || "Passwort wiederholen";
+
+  // Zwei Spalten nebeneinander (Bootstrap-Grid), untereinander auf schmalen Screens.
   return (
-    `<div class="pwtools-wrapper" data-pwtools-policy='${escapeAttrJson(policy)}'>` +
-    input({
-      type: "password",
-      class: `form-control ${cls || ""}`,
-      name,
-      id,
-      autocomplete: "new-password",
-      "data-pwtools-input": "1",
-    }) +
+    `<div class="pwtools-wrapper" data-pwtools-policy='${escapeAttrJson(policy)}' data-pwtools-confirm="1">` +
+    `<div class="row g-2">` +
+      `<div class="col-12 col-md-6">` +
+        `<label class="form-label small text-muted mb-1" for="${id}">${pLabel}</label>` +
+        primaryInput +
+      `</div>` +
+      `<div class="col-12 col-md-6">` +
+        `<label class="form-label small text-muted mb-1" for="${confirmId}">${cLabel}</label>` +
+        confirmInput +
+        `<small class="pwtools-confirm-msg small text-danger d-block mt-1" style="min-height:1.2em"></small>` +
+      `</div>` +
+    `</div>` +
     (allowUserChoice
-      ? `<label class="form-label small text-muted mt-1 mb-0" for="${id}_scheme">Hash-Schema</label>`
+      ? `<label class="form-label small text-muted mt-2 mb-0" for="${id}_scheme">Hash-Schema</label>`
       : "") +
     schemeControl +
     meter +
@@ -268,7 +310,7 @@ function fieldviewsFactory() {
       type: "String",
       isEdit: true,
       description:
-        "Passwort-Eingabefeld mit Staerke-Anzeige und optionalem Hash-Schema-Dropdown.",
+        "Passwort-Eingabefeld mit Staerke-Anzeige, optionalem Hash-Schema-Dropdown und optionaler Passwort-Bestaetigung.",
       configFields: [
         {
           name: "scheme",
@@ -292,10 +334,33 @@ function fieldviewsFactory() {
           label: "Min. zxcvbn Score (Override)",
           type: "Integer",
         },
+        {
+          name: "require_confirm",
+          label: "Passwort-Bestaetigung anzeigen",
+          type: "Bool",
+          default: true,
+          sublabel:
+            "Zeigt ein zweites Feld zur Bestaetigung. Submit wird blockiert, wenn beide Felder nicht uebereinstimmen.",
+        },
+        {
+          name: "primary_label",
+          label: "Beschriftung Passwortfeld",
+          type: "String",
+          sublabel: "Nur wirksam, wenn Bestaetigung aktiv ist. Default: Passwort",
+        },
+        {
+          name: "confirm_label",
+          label: "Beschriftung Bestaetigungsfeld",
+          type: "String",
+          sublabel: "Default: Passwort wiederholen",
+        },
       ],
       run: (nm, v, attrs, cls) => {
-        const opts = mergeOpts(pluginState, attrs || {});
-        const policy = mergePolicy(pluginState, attrs || {});
+        const a = attrs || {};
+        const opts = mergeOpts(pluginState, a);
+        const policy = mergePolicy(pluginState, a);
+        const requireConfirm =
+          typeof a.require_confirm === "boolean" ? a.require_confirm : true;
         return renderPlainEditor({
           name: nm,
           cls,
@@ -303,6 +368,9 @@ function fieldviewsFactory() {
           defaultScheme: opts.scheme,
           allowUserChoice: opts.allowUserChoice,
           policy,
+          requireConfirm,
+          primaryLabel: a.primary_label,
+          confirmLabel: a.confirm_label,
         });
       },
     },
@@ -425,6 +493,22 @@ function actionsFactory(config) {
           return { notice: "Kein Klartextpasswort - uebersprungen." };
         }
 
+        // Serverseitige Bestaetigungspruefung: wenn ein Confirm-Feld mitgeschickt
+        // wurde und nicht uebereinstimmt, Abbruch (fangt Faelle ab, in denen die
+        // clientseitige Pruefung umgangen wurde).
+        const confirmVal = row && row[`${plainField}__confirm`];
+        if (
+          confirmVal !== undefined &&
+          confirmVal !== null &&
+          confirmVal !== "" &&
+          confirmVal !== plain
+        ) {
+          return {
+            error:
+              "Passwortbestaetigung stimmt nicht mit Passwort ueberein.",
+          };
+        }
+
         const scheme =
           cfg.scheme ||
           (row && row[`${plainField}__scheme`]) ||
@@ -434,6 +518,8 @@ function actionsFactory(config) {
         if (looksLikeHash(plain)) {
           const update = { [hashField]: plain };
           if (cfg.clear_plain !== false) update[plainField] = "";
+          // Confirm-Feld nie persistieren
+          update[`${plainField}__confirm`] = undefined;
           if (
             table &&
             typeof table.updateRow === "function" &&
@@ -464,6 +550,7 @@ function actionsFactory(config) {
           await table.updateRow(update, row.id);
         }
         return { notice: `Passwort als ${scheme} gespeichert.` };
+
       },
     },
   };
