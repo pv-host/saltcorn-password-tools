@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.3.2 — 2026-07-04
+
+### Fixed — echter Fix für Passwortbestätigung, Policy und Feld-Schema
+- **Passwortbestätigung wird jetzt serverseitig zuverlässig durchgesetzt.**
+  In 0.3.1 gab `readFromFormRecord` bei einem Mismatch `null` zurück. Bei
+  nicht-required Feldern behandelt Saltcorn `readval===null` allerdings als
+  Erfolg (`{success: null}`) — der Datensatz wurde deshalb weiterhin
+  gespeichert. 0.3.2 gibt stattdessen einen Fehler-Marker (`__PWTOOLS_ERR__:…`)
+  als Wert zurück; der Validate-Trigger `hash_password_field` erkennt den
+  Marker und liefert ein `{error}`-Ergebnis, das den Insert/Update blockiert.
+- **Policy (min_length, Score, Zeichenklassen) wird gleichermaßen erzwungen.**
+  Bei umgangener Client-JS und aktivem Validate-Trigger blockt das Plugin jede
+  Policy-Verletzung — mit passender Fehlermeldung im Feld.
+- **Client-JS blockiert Save-Buttons robust.** Saltcorn rendert Save-Buttons
+  als `<button type="button" onclick="ajaxSubmitForm(this, true)">`. Ein
+  reines `submit`-Event feuert dabei nicht. 0.3.2 fängt Klicks auf alle
+  plausiblen Submit-Buttons in der Capture-Phase ab, entfernt vorübergehend
+  den inline `onclick`, führt eine Vor-Validierung durch und ruft den
+  Original-Handler nur bei bestandener Prüfung wieder auf.
+- Wrapper trägt jetzt `data-pwtools-enforce="1"`; damit greift die
+  Client-JS-Blockade zuverlässig für jedes gerenderte Passwortfeld.
+
+### Wichtig — Trigger-Empfehlung
+- Der Trigger `hash_password_field` MUSS als **`Validate`**-Trigger
+  konfiguriert werden, damit Fehler das Speichern blockieren. Insert/Update
+  laufen zu spät (nach dem DB-Write). Die Dokumentation wurde entsprechend
+  angepasst.
+
+### Compatibility
+- Rückwärtskompatibel. Keine Config- oder Feldänderungen nötig; bestehende
+  Konfigurationen mit Insert/Update-Trigger arbeiten weiter, blockieren
+  jedoch nicht — Umstellung auf Validate wird dringend empfohlen.
+
 ## 0.3.1 — 2026-07-04
 
 ### Fixed

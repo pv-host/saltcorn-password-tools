@@ -1,7 +1,10 @@
 /**
- * Integrationstests fuer v0.3.1:
- * - readFromFormRecord im Fieldview 'password_input'
- * - Trigger-Fehlerpfade (Confirm-Mismatch, Policy-Fail, Hash-Passthrough)
+ * Integrationstests fuer v0.3.2:
+ * - readFromFormRecord im Fieldview 'password_input' liefert einen
+ *   Marker-String (__PWTOOLS_ERR__:...) bei Fehler statt null, damit
+ *   Saltcorn den Wert nicht durch die {success:null}-Falle rutschen laesst.
+ * - Trigger-Fehlerpfade (Marker, Confirm-Mismatch als Fallback, Policy-Fail,
+ *   Hash-Passthrough)
  */
 
 "use strict";
@@ -83,7 +86,7 @@ test("readFromFormRecord: gueltiges Passwort + passender Confirm -> gibt Passwor
   );
 });
 
-test("readFromFormRecord: Confirm-Mismatch -> null + Fehlerkontext im rec", async () => {
+test("readFromFormRecord: Confirm-Mismatch -> Marker-String mit Meldung", async () => {
   await withPluginConfig(
     {
       min_length: 8,
@@ -100,16 +103,16 @@ test("readFromFormRecord: Confirm-Mismatch -> null + Fehlerkontext im rec", asyn
         password_plain__confirm: "Passwort00",
       };
       const result = fv.readFromFormRecord(rec, "password_plain");
-      assert.equal(result, null);
-      assert.match(
-        rec.__pwtools_error__password_plain,
-        /Passwortbestaetigung stimmt nicht/
+      assert.ok(
+        typeof result === "string" && result.startsWith("__PWTOOLS_ERR__:"),
+        "Erwartet Marker-String, bekommen: " + JSON.stringify(result)
       );
+      assert.match(result, /Passwortbestaetigung stimmt nicht/);
     }
   );
 });
 
-test("readFromFormRecord: Policy-Fail (zu kurz) -> null + Fehlerkontext", async () => {
+test("readFromFormRecord: Policy-Fail (zu kurz) -> Marker-String mit Meldung", async () => {
   await withPluginConfig(
     {
       min_length: 12,
@@ -126,11 +129,11 @@ test("readFromFormRecord: Policy-Fail (zu kurz) -> null + Fehlerkontext", async 
         password_plain__confirm: "Pass1",
       };
       const result = fv.readFromFormRecord(rec, "password_plain");
-      assert.equal(result, null);
-      assert.match(
-        rec.__pwtools_error__password_plain,
-        /Policy nicht/
+      assert.ok(
+        typeof result === "string" && result.startsWith("__PWTOOLS_ERR__:"),
+        "Erwartet Marker-String, bekommen: " + JSON.stringify(result)
       );
+      assert.match(result, /Policy nicht/);
     }
   );
 });
@@ -149,13 +152,12 @@ test("readFromFormRecord: fertiger Hash (BLF-CRYPT) wird ohne Confirm-Pruefung a
   });
 });
 
-test("Trigger: readFromFormRecord-Fehlerkontext wird abgefangen und als error zurueckgegeben", async () => {
+test("Trigger: erkennt Marker-String aus Fieldview und liefert error", async () => {
   const trigger = getTrigger();
   const res = await trigger.run({
     row: {
-      password_plain: "Pass1",
-      __pwtools_error__password_plain:
-        "Passwortbestaetigung stimmt nicht mit Passwort ueberein.",
+      password_plain:
+        "__PWTOOLS_ERR__:Passwortbestaetigung stimmt nicht mit Passwort ueberein.",
     },
     table: null,
     configuration: {
@@ -166,6 +168,25 @@ test("Trigger: readFromFormRecord-Fehlerkontext wird abgefangen und als error zu
   });
   assert.ok(res.error, "Trigger sollte error zurueckgeben");
   assert.match(res.error, /Passwortbestaetigung/);
+  assert.doesNotMatch(res.error, /__PWTOOLS_ERR__/, "Prefix soll entfernt sein");
+});
+
+test("Trigger: Marker-String fuer Policy-Fehler wird korrekt extrahiert", async () => {
+  const trigger = getTrigger();
+  const res = await trigger.run({
+    row: {
+      password_plain:
+        "__PWTOOLS_ERR__:Passwort erfuellt die Policy nicht: Mindestens 10 Zeichen",
+    },
+    table: null,
+    configuration: {
+      plain_field: "password_plain",
+      hash_field: "password_hash",
+      enforce_policy: true,
+    },
+  });
+  assert.ok(res.error);
+  assert.match(res.error, /Policy nicht/);
 });
 
 test("Trigger: schwaches Passwort -> error bei enforce_policy=true", async () => {

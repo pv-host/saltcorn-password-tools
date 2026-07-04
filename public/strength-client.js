@@ -1,13 +1,13 @@
 /**
- * saltcorn-password-tools — Client-side strength meter and confirm-check.
+ * saltcorn-password-tools - Client-side strength meter, confirm-check, policy-check.
  *
- * Suche alle .pwtools-wrapper im DOM und binde Input-Listener.
- * Nutzt zxcvbn (vom Plugin ueber CDN geladen) plus die konfigurierten
- * Policy-Regeln (data-pwtools-policy JSON-Attribut auf .pwtools-wrapper).
- *
- * Wenn data-pwtools-confirm="1" gesetzt ist, wird zusaetzlich das
- * Bestaetigungsfeld gegen das Primaerfeld geprueft und das umgebende
- * <form> beim Submit blockiert, falls beide nicht identisch sind.
+ * Blockade-Strategie fuer Saltcorn-Edit-Views:
+ * - Saltcorn rendert Save-Buttons oft als <button type="button" onclick="ajaxSubmitForm(this, true)">.
+ *   Ein reines submit-Event feuert dabei NICHT.
+ * - Wir haengen an alle relevanten Buttons einen Capture-Phase-Click-Handler,
+ *   der bei Fehler stopImmediatePropagation() ruft. Das verhindert auch den
+ *   inline onclick-Handler (browserseitig als spaeterer Listener behandelt).
+ * - Zusaetzlich sichern wir das submit-Event (klassische Formulare).
  */
 (function () {
   "use strict";
@@ -44,6 +44,7 @@
 
     const requireConfirm =
       wrapper.getAttribute("data-pwtools-confirm") === "1" && !!confirmInput;
+    const enforcePolicy = wrapper.getAttribute("data-pwtools-enforce") !== "0";
 
     function evalRules(pw) {
       const problems = [];
@@ -101,6 +102,17 @@
       }
     }
 
+    function computePolicyOk(pw) {
+      if (!pw) return false;
+      const rules = evalRules(pw);
+      if (rules.problems.length > 0) return false;
+      if (window.zxcvbn && policy.minScore !== undefined) {
+        const z = window.zxcvbn(pw);
+        if (z.score < policy.minScore) return false;
+      }
+      return true;
+    }
+
     function render(pw) {
       const rules = evalRules(pw);
       let score = -1;
@@ -130,7 +142,7 @@
         label.textContent =
           "Staerke: " +
           scoreLabel +
-          (strong ? " — Policy erfuellt" : " — Policy NICHT erfuellt");
+          (strong ? " - Policy erfuellt" : " - Policy NICHT erfuellt");
         label.style.color = strong ? "#198754" : "#dc3545";
       }
 
@@ -140,6 +152,9 @@
         li.textContent = msg;
         feedback.appendChild(li);
       });
+
+      // Marker fuer Submit-Blockade
+      wrapper.dataset.pwtoolsPolicyOk = computePolicyOk(pw) ? "1" : "0";
     }
 
     input.addEventListener("input", function () {
@@ -150,48 +165,13 @@
     if (requireConfirm) {
       confirmInput.addEventListener("input", checkConfirm);
       confirmInput.addEventListener("blur", checkConfirm);
+    }
 
-      // Submit-Blockade beim umschliessenden Form (fuer klassischen und AJAX-Submit).
-      const form = input.closest("form");
-      if (form && !form.dataset.pwtoolsSubmitBound) {
-        form.dataset.pwtoolsSubmitBound = "1";
-
-        // 1) Klassisches submit-Event (capture, damit wir vor Saltcorn-Handlern greifen).
-        form.addEventListener(
-          "submit",
-          function (ev) {
-            if (!validateAllPwWrappers(form)) {
-              ev.preventDefault();
-              ev.stopPropagation();
-              if (typeof ev.stopImmediatePropagation === "function")
-                ev.stopImmediatePropagation();
-              return false;
-            }
-          },
-          true
-        );
-
-        // 2) Klick auf submit/save-Buttons abfangen (Saltcorn nutzt teils
-        // direkte Button-Handler statt echtes form.submit()).
-        const submitButtons = form.querySelectorAll(
-          'button[type="submit"], input[type="submit"], button[onclick*="submit"], .btn-primary'
-        );
-        for (let i = 0; i < submitButtons.length; i++) {
-          submitButtons[i].addEventListener(
-            "click",
-            function (ev) {
-              if (!validateAllPwWrappers(form)) {
-                ev.preventDefault();
-                ev.stopPropagation();
-                if (typeof ev.stopImmediatePropagation === "function")
-                  ev.stopImmediatePropagation();
-                return false;
-              }
-            },
-            true
-          );
-        }
-      }
+    // Submit-Blockade
+    const form = input.closest("form");
+    if (form && !form.dataset.pwtoolsSubmitBound) {
+      form.dataset.pwtoolsSubmitBound = "1";
+      bindFormBlockade(form);
     }
 
     // Initial render
@@ -199,31 +179,127 @@
     if (requireConfirm) checkConfirm();
   }
 
-  function validateAllPwWrappers(form) {
-    const dirty = form.querySelectorAll(
-      '.pwtools-wrapper[data-pwtools-confirm="1"]'
-    );
+  // Zentrale Validierung fuer ein Form: prueft alle .pwtools-wrapper.
+  function validatePwFormState(form) {
+    const wrappers = form.querySelectorAll(".pwtools-wrapper");
     let ok = true;
-    for (let i = 0; i < dirty.length; i++) {
-      const w = dirty[i];
+    for (let i = 0; i < wrappers.length; i++) {
+      const w = wrappers[i];
       const p = w.querySelector("[data-pwtools-input]");
-      const c = w.querySelector("[data-pwtools-confirm-input]");
-      if (!p || !c) continue;
+      if (!p) continue;
       const pv = p.value || "";
-      const cv = c.value || "";
-      if (pv && pv !== cv) {
-        const msg = w.querySelector(".pwtools-confirm-msg");
-        if (msg) {
-          msg.textContent = "Passwoerter stimmen nicht ueberein";
-          msg.classList.remove("text-success");
-          msg.classList.add("text-danger");
+
+      // Nur pruefen, wenn ein Passwort eingegeben wurde. Leer = nicht editiert.
+      if (!pv) continue;
+
+      // Confirm
+      if (w.getAttribute("data-pwtools-confirm") === "1") {
+        const c = w.querySelector("[data-pwtools-confirm-input]");
+        const cv = c ? c.value || "" : "";
+        if (pv !== cv) {
+          const msg = w.querySelector(".pwtools-confirm-msg");
+          if (msg) {
+            msg.textContent = "Passwoerter stimmen nicht ueberein";
+            msg.classList.remove("text-success");
+            msg.classList.add("text-danger");
+          }
+          if (c) {
+            c.classList.add("is-invalid");
+            c.focus();
+          }
+          ok = false;
+          continue;
         }
-        c.classList.add("is-invalid");
-        c.focus();
-        ok = false;
+      }
+
+      // Policy
+      if (w.getAttribute("data-pwtools-enforce") !== "0") {
+        if (w.dataset.pwtoolsPolicyOk !== "1") {
+          p.classList.add("is-invalid");
+          // Fokus auf Passwortfeld
+          if (ok) p.focus();
+          ok = false;
+        } else {
+          p.classList.remove("is-invalid");
+        }
       }
     }
     return ok;
+  }
+
+  function bindFormBlockade(form) {
+    // 1) Klassisches submit-Event (feuert bei <button type="submit"> und form.submit()).
+    form.addEventListener(
+      "submit",
+      function (ev) {
+        if (!validatePwFormState(form)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (typeof ev.stopImmediatePropagation === "function")
+            ev.stopImmediatePropagation();
+          return false;
+        }
+      },
+      true
+    );
+
+    // 2) Alle potenziellen Save-Buttons: Capture-Click abfangen.
+    //    Saltcorn nutzt <button type="button" onclick="ajaxSubmitForm(this, true)">
+    //    - onclick-inline ist ein normaler Listener und wird von
+    //      stopImmediatePropagation NICHT verlaesslich gestoppt.
+    //    - Deshalb ersetzen wir bei Fehler den onclick durch einen Wrapper,
+    //      der zunaechst validiert.
+    const buttons = form.querySelectorAll(
+      'button, input[type="submit"], input[type="button"]'
+    );
+    for (let i = 0; i < buttons.length; i++) {
+      const btn = buttons[i];
+      if (btn.dataset.pwtoolsClickBound === "1") continue;
+
+      // onclick-inline wrappen (nur wenn ein onclick vorhanden ist, das
+      // vermutlich einen Submit ausloest).
+      const inlineOnClick = btn.getAttribute("onclick") || "";
+      const looksLikeSubmit =
+        /ajaxSubmitForm|submitWithAjax|form_submit|form\.submit|sc_form_submit/.test(
+          inlineOnClick
+        ) ||
+        btn.type === "submit" ||
+        btn.classList.contains("btn-primary");
+
+      if (!looksLikeSubmit) continue;
+
+      btn.dataset.pwtoolsClickBound = "1";
+
+      // Wrap den inline onclick.
+      if (inlineOnClick) {
+        btn.removeAttribute("onclick");
+        btn._pwtoolsOrigOnClick = inlineOnClick;
+      }
+
+      btn.addEventListener(
+        "click",
+        function (ev) {
+          if (!validatePwFormState(form)) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (typeof ev.stopImmediatePropagation === "function")
+              ev.stopImmediatePropagation();
+            return false;
+          }
+          // Passwortprobleme keine -> Original-onclick ausfuehren.
+          if (btn._pwtoolsOrigOnClick) {
+            // Ausfuehren im Kontext des Buttons.
+            try {
+              // eslint-disable-next-line no-new-func
+              new Function("event", btn._pwtoolsOrigOnClick).call(btn, ev);
+            } catch (e) {
+              console.error("[pwtools] onclick error:", e);
+            }
+          }
+        },
+        true
+      );
+    }
   }
 
   function scan() {

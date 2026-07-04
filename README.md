@@ -95,19 +95,22 @@ gar nicht angezeigt zu werden.
 
 Erstelle einen **Trigger** in der Ziel-Tabelle:
 
-- **When:** `Validate` (empfohlen ab 0.3.1) — wird VOR dem Insert/Update
-  ausgeführt und blockiert das Speichern, wenn die Passwortpolicy verletzt
-  ist. Der Klartext gelangt so nie in die Datenbank.
+- **When:** `Validate` (ab 0.3.2 zwingend erforderlich, wenn Bugs geblockt
+  werden sollen) — läuft VOR dem Insert/Update und kann durch die Rückgabe
+  von `{error}` das Speichern verhindern. Damit blockieren Confirm-Mismatch
+  und Policy-Verletzung den Datensatz vollständig, und der Klartext gelangt
+  nie in die Datenbank.
 - **Action:** `hash_password_field`
 - Konfiguration:
   - Quellfeld: `password_plain`
   - Zielfeld: `password_hash`
-  - Passwortpolicy erzwingen: ✅
-  - Klartextfeld nach Hashen leeren: ✅
+  - Passwortpolicy erzwingen: aktivieren
+  - Klartextfeld nach Hashen leeren: aktivieren
 
-Alternativ können weiterhin `Insert`/`Update`-Trigger verwendet werden. Der
-Effekt ist gleich, nur landet der Klartext dann kurzzeitig in der Zeile bevor
-der Trigger ihn ersetzt.
+`Insert`/`Update`-Trigger funktionieren technisch weiter, laufen aber NACH
+dem DB-Write. Die Passwortbestätigung und die Policy können dann den
+Datensatz nicht mehr blockieren. Verwende in Neuinstallationen ausschließlich
+den `Validate`-Trigger.
 
 Damit wird bei jedem Speichern der Klartext gehasht, ins Hash-Feld geschrieben
 und das Klartextfeld anschließend geleert.

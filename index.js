@@ -26,6 +26,13 @@ const { evaluate } = require("./lib/strength");
 
 const PLUGIN_NAME = "saltcorn-password-tools";
 
+// Sonderprefix fuer Fehler-Weitergabe: readFromFormRecord kann keinen
+// {error}-Wert direkt zurueckgeben, weil Field.validate bei readval===null
+// bei nicht-required Feldern einfach {success:null} produziert (kein Fehler).
+// Wir schmuggeln daher einen Marker-String durch, den der Validate-Trigger
+// erkennt und in {error} umwandelt.
+const PWTOOLS_ERR_PREFIX = "__PWTOOLS_ERR__:";
+
 // -----------------------------------------------------------------------------
 // Configuration Workflow (Settings -> Modules -> Configure)
 // -----------------------------------------------------------------------------
@@ -246,7 +253,7 @@ function renderPlainEditor({
 
   if (!requireConfirm) {
     return (
-      `<div class="pwtools-wrapper" data-pwtools-policy='${escapeAttrJson(policy)}' data-pwtools-confirm="0">` +
+      `<div class="pwtools-wrapper" data-pwtools-enforce="1" data-pwtools-policy='${escapeAttrJson(policy)}' data-pwtools-confirm="0">` +
       primaryInput +
       (allowUserChoice
         ? `<label class="form-label small text-muted mt-1 mb-0" for="${id}_scheme">Hash-Schema</label>`
@@ -271,7 +278,7 @@ function renderPlainEditor({
 
   // Zwei Spalten nebeneinander (Bootstrap-Grid), untereinander auf schmalen Screens.
   return (
-    `<div class="pwtools-wrapper" data-pwtools-policy='${escapeAttrJson(policy)}' data-pwtools-confirm="1">` +
+    `<div class="pwtools-wrapper" data-pwtools-enforce="1" data-pwtools-policy='${escapeAttrJson(policy)}' data-pwtools-confirm="1">` +
     `<div class="row g-2">` +
       `<div class="col-12 col-md-6">` +
         `<label class="form-label small text-muted mb-1" for="${id}">${pLabel}</label>` +
@@ -311,12 +318,17 @@ function fieldviewsFactory() {
       isEdit: true,
       description:
         "Passwort-Eingabefeld mit Staerke-Anzeige, optionalem Hash-Schema-Dropdown und optionaler Passwort-Bestaetigung.",
-      // readFromFormRecord laeuft VOR dem DB-Write (siehe Field.validate)
-      // und ist unser primaerer serverseitiger Validierungspfad.
-      // Wir lesen das Klartextpasswort + optional __confirm + __scheme und
-      // pruefen Bestaetigung und Policy. Bei Fehler geben wir null zurueck,
-      // damit Field.validate ein Fehler-Objekt liefert (Feld gilt als
-      // "nicht lesbar") und das Formular blockiert wird.
+      // readFromFormRecord laeuft VOR dem DB-Write als Teil von
+      // Field.validate(). Wir haben hier Zugriff auf den kompletten
+      // Request-Body inkl. der Zusatzfelder __confirm und __scheme.
+      //
+      // Da Field.validate bei readval===null nur bei required=true einen
+      // Fehler wirft, koennen wir Confirm-Mismatch oder Policy-Verletzungen
+      // nicht ueber null-Rueckgabe blockieren. Wir geben deshalb einen
+      // Marker-String zurueck (PWTOOLS_ERR_PREFIX + Nachricht). Dieser
+      // String durchlaeuft den min_length-Check unbeschadet (Marker ist
+      // laenger als jede sinnvolle min_length) und wird vom Validate-Trigger
+      // als Fehler erkannt und via {error} zurueckgemeldet.
       readFromFormRecord: (rec, name) => {
         if (!rec) return null;
         const raw = rec[name];
@@ -324,31 +336,35 @@ function fieldviewsFactory() {
         const plain = String(raw);
 
         // Wenn bereits ein fertiger Hash uebergeben wird (z.B. Import),
-        // ohne Confirm-Feld akzeptieren wir das unveraendert.
+        // unveraendert durchlassen (kein Confirm-Check).
         if (looksLikeHash(plain)) return plain;
 
-        // Confirm pruefen, sofern uebermittelt.
+        // Confirm pruefen, sofern uebermittelt. Wir akzeptieren den Wert
+        // sowohl unter <name>__confirm als auch als plain confirm-Feld.
         const confirmKey = name + "__confirm";
         const confirmVal = rec[confirmKey];
         if (
           confirmVal !== undefined &&
           confirmVal !== null &&
+          confirmVal !== "" &&
           String(confirmVal) !== plain
         ) {
-          // Fehlerkontext fuer den Validate-Trigger ablegen.
-          rec["__pwtools_error__" + name] =
-            "Passwortbestaetigung stimmt nicht mit Passwort ueberein.";
-          return null;
+          return (
+            PWTOOLS_ERR_PREFIX +
+            "Passwortbestaetigung stimmt nicht mit Passwort ueberein."
+          );
         }
 
         // Policy pruefen (Server-Seite, unabhaengig vom Client).
+        // Fieldview-Attributes koennen einige Policy-Werte ueberschreiben.
         const policy = mergePolicy(pluginState, {});
         const check = evaluate(plain, policy);
         if (!check.valid) {
-          rec["__pwtools_error__" + name] =
+          return (
+            PWTOOLS_ERR_PREFIX +
             "Passwort erfuellt die Policy nicht: " +
-            check.problems.join("; ");
-          return null;
+            check.problems.join("; ")
+          );
         }
 
         return plain;
@@ -534,11 +550,10 @@ function actionsFactory(config) {
         // als Insert/Update-Trigger enthaelt row die eingefuegte Zeile.
         const plain = row && row[plainField];
 
-        // Zuerst: einen von readFromFormRecord im Fieldview vermerkten
-        // Fehler abfangen (Confirm-Mismatch oder Policy-Fail).
-        const preErrKey = "__pwtools_error__" + plainField;
-        if (row && row[preErrKey]) {
-          return { error: String(row[preErrKey]) };
+        // Zuerst: Fehler-Marker aus readFromFormRecord im Fieldview erkennen
+        // (Confirm-Mismatch oder Policy-Fail).
+        if (typeof plain === "string" && plain.startsWith(PWTOOLS_ERR_PREFIX)) {
+          return { error: plain.slice(PWTOOLS_ERR_PREFIX.length) };
         }
 
         if (!plain || typeof plain !== "string") {
