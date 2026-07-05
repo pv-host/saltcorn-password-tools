@@ -1,7 +1,7 @@
 {
   "name": "saltcorn-password-tools",
-  "version": "0.3.3",
-  "description": "Saltcorn plugin: hash plaintext passwords (BLF-CRYPT / SHA512-CRYPT / PBKDF2) with configurable Dovecot-compatible prefix and integrated password-strength meter (zxcvbn + rule checks).",
+  "version": "0.4.0",
+  "description": "Saltcorn plugin: hash plaintext passwords (BLF-CRYPT / SHA512-CRYPT / PBKDF2 / CRAM-MD5) with configurable Dovecot-compatible prefix and integrated password-strength meter (zxcvbn + rule checks).",
   "main": "index.js",
   "scripts": {
     "test": "node --test test/",
@@ -15,6 +15,7 @@
     "bcrypt",
     "sha512-crypt",
     "pbkdf2",
+    "cram-md5",
     "dovecot",
     "zxcvbn"
   ],

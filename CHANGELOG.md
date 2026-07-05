@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0 — 2026-07-05
+
+### Added — CRAM-MD5 als viertes Hash-Schema
+- **Neues Schema `CRAM-MD5`** (Dovecot-kompatibel). Erzeugt einen
+   32-Byte-HMAC-MD5-Key-Kontext, gespeichert als 64 Hex-Zeichen mit optionalem
+  `{CRAM-MD5}`-Präfix. Beim Verify wird sowohl `{CRAM-MD5}` als auch das
+  Dovecot-Alias `{HMAC-MD5}` akzeptiert.
+- Implementierung in `lib/md5-block.js` (MD5-Block-Transform mit
+  offengelegtem internen State) und `lib/cram-md5.js`. Ohne externe Deps.
+- Neuer Test-Vektor gegen `doveadm pw` verifiziert:
+  `password` → `{CRAM-MD5}9186d855e11eba527a7a52ca82b313e180d62234f0acc9051b527243d41e2740`.
+- Cross-Check gegen Node `crypto.createHmac("md5", ...)` bestätigt: unsere
+  gespeicherten ipad/opad-States entsprechen exakt der HMAC-MD5-Key-Setup.
+- Sechs neue Tests (`hashes.test.js`): Round-Trip mit/ohne Präfix,
+  Test-Vektor, Determinismus, Long-Key (>64 Byte), `{HMAC-MD5}`-Alias.
+
+### Fixed — {SCHEMA}-Präfix wurde nicht immer korrekt geschrieben
+- **Ursache:** Trigger-Action und Server-Funktionen lasen die Plugin-Config
+  aus der **Closure**, die Saltcorn beim Registrieren des Plugins übergibt.
+  Änderungen im „Modules → Configure”-Panel (u. a. `Dovecot-Präfix
+  voranstellen`, `default_scheme`, `bcrypt_rounds`) griffen dort erst nach
+  einem Neustart oder Neu-Register.
+- **Fix:** `actionsFactory`, `functionsFactory` und `routesFactory` lesen
+  jetzt aus `pluginState` — einer Modulvariable, die `onLoad` bei jedem
+  Konfig-Update aktualisiert. Trigger-Attribute (`scheme`, `with_prefix`)
+  haben weiterhin Vorrang; leere Attribute erben transparent den
+  Plugin-Default.
+- **Neu:** Der Trigger `hash_password_field` erhält ein zusätzliches
+  Config-Feld `with_prefix` (Bool, leer = Plugin-Default). Damit kann pro
+  Trigger überschrieben werden, ob das Ergebnis mit `{SCHEMA}` vorangestellt
+  wird — praktisch, wenn parallel eine Tabelle Dovecot-kompatibel und eine
+  andere ohne Präfix gespeist werden soll.
+- Robustheit: alle Factories seeden `pluginState` mit ihrer Registrierungs-
+  Config, falls `onLoad` noch nicht gelaufen ist.
+
+### Changed
+- `SCHEMES` exportiert jetzt `["BLF-CRYPT", "SHA512-CRYPT", "PBKDF2", "CRAM-MD5"]`.
+- `detectSchemeFromHash` erkennt CRAM-MD5 bewusst **nicht** automatisch,
+  weil 64 rohe Hex-Zeichen mehrdeutig sind (SHA-256 u. a.). Der Präfix ist
+  Pflicht, wenn ein CRAM-MD5-Hash über `verifyPassword` geprüft werden soll.
+
+### Tests
+- 32/32 grün (25 → 32).
+
 ## 0.3.3 — 2026-07-04
 
 ### Fixed — DB-Insert-Regression

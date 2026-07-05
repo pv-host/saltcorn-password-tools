@@ -10,6 +10,7 @@ Unterstützte Hash-Schemata:
 | `BLF-CRYPT`   | `{BLF-CRYPT}$2y$12$…` (bcrypt)                            |
 | `SHA512-CRYPT`| `{SHA512-CRYPT}$6$rounds=5000$salt$hash`                  |
 | `PBKDF2`      | `{PBKDF2}$1$salt$25000$…` (Dovecot-Format, hex-encoded)   |
+| `CRAM-MD5`    | `{CRAM-MD5}<64 Hex>` (HMAC-MD5 Key-Kontext, deterministisch) |
 
 Der Dovecot-`{SCHEME}`-Prefix ist **konfigurierbar** — sowohl global in der
 Plugin-Config als auch pro Feld.
@@ -69,7 +70,7 @@ Setze in der Edit-View für `password_plain` die Field-View **`password_input`**
 - **ein zweites Bestätigungsfeld** direkt daneben (ab Bildschirmbreite `md`;
   auf schmalen Screens untereinander) — kann in den Field-View-Einstellungen
   über `require_confirm = false` abgeschaltet werden
-- ein optionales Schema-Dropdown (`BLF-CRYPT` / `SHA512-CRYPT` / `PBKDF2`)
+- ein optionales Schema-Dropdown (`BLF-CRYPT` / `SHA512-CRYPT` / `PBKDF2` / `CRAM-MD5`)
 - einen live aktualisierten Stärke-Balken mit Feedback
 
 Der Submit-Button wird automatisch blockiert, solange die beiden Passwortfelder
@@ -183,8 +184,12 @@ Antwort:
 
 - Saltcorn ≥ 0.9 (Plugin-API v1)
 - Node.js ≥ 16
-- Dovecot: `BLF-CRYPT`, `SHA512-CRYPT` und `PBKDF2` sind mit den offiziellen
-  Dovecot-Formaten kompatibel (siehe [Dovecot Password Schemes](https://doc.dovecot.org/main/core/config/auth/schemes.html)).
+- Dovecot: `BLF-CRYPT`, `SHA512-CRYPT`, `PBKDF2` und `CRAM-MD5` sind mit den
+  offiziellen Dovecot-Formaten kompatibel (siehe [Dovecot Password Schemes](https://doc.dovecot.org/main/core/config/auth/schemes.html)).
+- `CRAM-MD5` wird auch unter dem Dovecot-Alias `{HMAC-MD5}` beim Verify
+  akzeptiert und ist deterministisch (kein Salt) – gleicher Klartext liefert
+  denselben Hash und ist damit bewusst schwächer als die anderen Schemas.
+  Nur für CRAM-MD5-SASL-Auth verwenden, nicht als generischer Passwortspeicher.
 
 ---
 

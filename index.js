@@ -454,16 +454,21 @@ function fieldviewsFactory() {
 // -----------------------------------------------------------------------------
 
 function functionsFactory(config) {
+  if (config && Object.keys(pluginState).length === 0) {
+    pluginState = Object.assign({}, config);
+  }
   return {
     pwtools_hash: {
       description:
-        "Hasht ein Klartext-Passwort mit dem konfigurierten Schema (BLF-CRYPT / SHA512-CRYPT / PBKDF2).",
+        "Hasht ein Klartext-Passwort mit dem konfigurierten Schema (BLF-CRYPT / SHA512-CRYPT / PBKDF2 / CRAM-MD5).",
       arguments: [
         { name: "plain", type: "String" },
         { name: "options", type: "JSON" },
       ],
       run: async (plain, options) => {
-        const opts = mergeOpts(config, options || {});
+        // pluginState reflects live plugin config (aktualisiert via onLoad),
+        // waehrend `config` die Closure vom Registrierungszeitpunkt haelt.
+        const opts = mergeOpts(pluginState, options || {});
         return await hashPassword(plain, opts);
       },
     },
@@ -480,7 +485,7 @@ function functionsFactory(config) {
       description:
         "Berechnet die Passwortstaerke (zxcvbn + Regelpruefung).",
       arguments: [{ name: "plain", type: "String" }],
-      run: (plain) => evaluate(plain, mergePolicy(config, {})),
+      run: (plain) => evaluate(plain, mergePolicy(pluginState, {})),
     },
   };
 }
@@ -490,6 +495,11 @@ function functionsFactory(config) {
 // -----------------------------------------------------------------------------
 
 function actionsFactory(config) {
+  // Falls onLoad noch nicht gelaufen ist, mit Registrierungs-Config seed'en,
+  // damit mergeOpts(pluginState, ...) nicht auf einem leeren Objekt landet.
+  if (config && Object.keys(pluginState).length === 0) {
+    pluginState = Object.assign({}, config);
+  }
   return {
     hash_password_field: {
       description:
@@ -526,6 +536,14 @@ function actionsFactory(config) {
             label: "Schema (leer = Auswahl im Formular / Default)",
             type: "String",
             attributes: { options: ["", ...SCHEMES] },
+          },
+          {
+            name: "with_prefix",
+            label: "Dovecot-Prefix {SCHEMA} voranstellen",
+            type: "Bool",
+            sublabel:
+              "Leer = Wert aus Plugin-Config verwenden. Aktiv schreibt z.B. " +
+              "{BLF-CRYPT}... in das Hash-Feld.",
           },
           {
             name: "enforce_policy",
@@ -579,7 +597,7 @@ function actionsFactory(config) {
         const scheme =
           cfg.scheme ||
           row[`${plainField}__scheme`] ||
-          (config && config.default_scheme) ||
+          (pluginState && pluginState.default_scheme) ||
           "BLF-CRYPT";
 
         // Extra-Formfelder aus row entfernen, damit sie nie in eine
@@ -615,7 +633,8 @@ function actionsFactory(config) {
 
         // Fall 2: Policy pruefen (Server-Fallback fuer den Fall, dass das
         // Fieldview readFromFormRecord nicht ausgefuehrt wurde).
-        const policy = mergePolicy(config, {});
+        // pluginState statt config: reflektiert live-Config-Updates.
+        const policy = mergePolicy(pluginState, {});
         const check = evaluate(plain, policy);
         if (cfg.enforce_policy !== false && !check.valid) {
           return {
@@ -626,7 +645,14 @@ function actionsFactory(config) {
         }
 
         // Fall 3: Hashen.
-        const opts = mergeOpts(config, { scheme });
+        // pluginState statt config, damit Aenderungen an Default-Schema oder
+        // Prefix-Toggle im Modules-Config sofort greifen. Trigger-Attrs
+        // (scheme, with_prefix) haben Vorrang.
+        const triggerAttrs = { scheme };
+        if (typeof cfg.with_prefix === "boolean") {
+          triggerAttrs.with_prefix = cfg.with_prefix;
+        }
+        const opts = mergeOpts(pluginState, triggerAttrs);
         const hashed = await hashPassword(plain, opts);
 
         const setFields = { [hashField]: hashed };
@@ -655,6 +681,9 @@ function actionsFactory(config) {
 // -----------------------------------------------------------------------------
 
 function routesFactory(config) {
+  if (config && Object.keys(pluginState).length === 0) {
+    pluginState = Object.assign({}, config);
+  }
   return [
     {
       url: "/pwtools/strength",
@@ -662,7 +691,7 @@ function routesFactory(config) {
       callback: async (req, res) => {
         try {
           const body = req.body || {};
-          const merged = mergePolicy(config, body.policy || {});
+          const merged = mergePolicy(pluginState, body.policy || {});
           const result = evaluate(body.password || "", merged);
           res.json(result);
         } catch (e) {
@@ -705,6 +734,9 @@ module.exports = {
   // Wird beim Laden und nach Konfigurationsaenderungen aufgerufen und stellt
   // die Plugin-Config den (config-losen) fieldviews via Modul-Slot bereit.
   onLoad: async (config) => {
+    // Wichtig: pluginState wird von allen Trigger-Actions, Functions und
+    // Fieldviews live gelesen (mergeOpts/mergePolicy) - dadurch reagiert das
+    // Plugin auf Konfigurationsaenderungen im Modules-Panel ohne Neustart.
     pluginState = config || {};
   },
 };
