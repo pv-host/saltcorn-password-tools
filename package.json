@@ -1,6 +1,6 @@
 {
   "name": "saltcorn-password-tools",
-  "version": "0.4.0",
+  "version": "0.4.3",
   "description": "Saltcorn plugin: hash plaintext passwords (BLF-CRYPT / SHA512-CRYPT / PBKDF2 / CRAM-MD5) with configurable Dovecot-compatible prefix and integrated password-strength meter (zxcvbn + rule checks).",
   "main": "index.js",
   "scripts": {
@@ -19,16 +19,7 @@
     "dovecot",
     "zxcvbn"
   ],
-  "author": "Peter Vassen <ich@peter-vassen.de> (https://pv-host.net)",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/pv-host/saltcorn-password-tools.git"
-  },
-  "bugs": {
-    "url": "https://github.com/pv-host/saltcorn-password-tools/issues"
-  },
-  "homepage": "https://github.com/pv-host/saltcorn-password-tools#readme",
   "engines": {
     "node": ">=16"
   },
@@ -45,6 +36,8 @@
     "lib/",
     "public/",
     "README.md",
-    "LICENSE"
-  ]
+    "LICENSE",
+    "SECURITY-REVIEW.md"
+  ],
+  "private": true
 }

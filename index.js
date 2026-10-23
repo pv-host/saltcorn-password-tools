@@ -33,6 +33,27 @@ const PLUGIN_NAME = "saltcorn-password-tools";
 // erkennt und in {error} umwandelt.
 const PWTOOLS_ERR_PREFIX = "__PWTOOLS_ERR__:";
 
+// Sonderprefix fuer Schema-Weitergabe vom Fieldview zum Validate-Trigger.
+// Hintergrund: Form.validate() baut form.values ausschliesslich aus
+// registrierten Table-Feldern auf. Extra-Formfelder wie <name>__scheme sind
+// keine Table-Felder und landen deshalb NIE in v_in, das der Trigger sieht.
+// readFromFormRecord ist unsere einzige Chance, den req.body zu lesen -
+// deshalb kodieren wir die User-Wahl in den Rueckgabewert (Klartext) und
+// packen sie im Trigger wieder aus.
+const PWTOOLS_SCHEME_PREFIX = "__PWTOOLS_SCHEME__:";
+
+// Extrahiert eine ggf. vorangestellte Schema-Wahl aus einem Klartext-String.
+// Rueckgabe: { scheme: string|null, plain: string }.
+function extractSchemeSentinel(value) {
+  if (typeof value !== "string" || !value.startsWith(PWTOOLS_SCHEME_PREFIX)) {
+    return { scheme: null, plain: value };
+  }
+  const rest = value.slice(PWTOOLS_SCHEME_PREFIX.length);
+  const sep = rest.indexOf("|");
+  if (sep < 0) return { scheme: null, plain: value };
+  return { scheme: rest.slice(0, sep), plain: rest.slice(sep + 1) };
+}
+
 // -----------------------------------------------------------------------------
 // Configuration Workflow (Settings -> Modules -> Configure)
 // -----------------------------------------------------------------------------
@@ -87,14 +108,14 @@ const configuration_workflow = () =>
                 label: "SHA512-CRYPT: Rounds",
                 type: "Integer",
                 default: 5000,
-                attributes: { min: 1000, max: 999999999 },
+                attributes: { min: 1000, max: 1000000 },
               },
               {
                 name: "pbkdf2_iterations",
                 label: "PBKDF2: Iterationen",
                 type: "Integer",
                 default: 25000,
-                attributes: { min: 1000, max: 10000000 },
+                attributes: { min: 1000, max: 1000000 },
               },
               {
                 name: "min_length",
@@ -196,8 +217,13 @@ function looksLikeHash(s) {
 
 function maskHash(s) {
   if (typeof s !== "string") return "";
-  if (s.length <= 12) return "••••";
-  return s.slice(0, 6) + "…" + s.slice(-4);
+  // Genug Kontext lassen, damit der Prefix ({SCHEMA}) sichtbar bleibt.
+  // 10 Zeichen Anfang + Ellipse + 4 Zeichen Ende. Ist der Hash so kurz,
+  // dass die Maske laenger waere als der Hash selbst, wird komplett maskiert.
+  const HEAD = 10;
+  const TAIL = 4;
+  if (s.length <= HEAD + TAIL + 1) return "••••";
+  return s.slice(0, HEAD) + "…" + s.slice(-TAIL);
 }
 
 function escapeAttrJson(obj) {
@@ -335,8 +361,18 @@ function fieldviewsFactory() {
         if (raw === undefined || raw === null || raw === "") return raw;
         const plain = String(raw);
 
+        // Wenn wir hier bereits einen Sentinel sehen (z.B. bei erneutem
+        // Form-POST derselben Session), unveraendert durchreichen. Der
+        // Validate-Trigger packt ihn dann sauber aus.
+        if (
+          plain.startsWith(PWTOOLS_SCHEME_PREFIX) ||
+          plain.startsWith(PWTOOLS_ERR_PREFIX)
+        ) {
+          return plain;
+        }
+
         // Wenn bereits ein fertiger Hash uebergeben wird (z.B. Import),
-        // unveraendert durchlassen (kein Confirm-Check).
+        // unveraendert durchlassen (kein Confirm-Check, kein Schema-Sentinel).
         if (looksLikeHash(plain)) return plain;
 
         // Confirm pruefen, sofern uebermittelt. Wir akzeptieren den Wert
@@ -356,7 +392,6 @@ function fieldviewsFactory() {
         }
 
         // Policy pruefen (Server-Seite, unabhaengig vom Client).
-        // Fieldview-Attributes koennen einige Policy-Werte ueberschreiben.
         const policy = mergePolicy(pluginState, {});
         const check = evaluate(plain, policy);
         if (!check.valid) {
@@ -365,6 +400,20 @@ function fieldviewsFactory() {
             "Passwort erfuellt die Policy nicht: " +
             check.problems.join("; ")
           );
+        }
+
+        // Schema-Wahl aus dem Formular durchreichen. Form.validate() verwirft
+        // sonst alle Extra-Felder wie <name>__scheme, weil sie keine
+        // Table-Fields sind. Wir kodieren die User-Wahl in den Rueckgabewert
+        // und packen sie im Validate-Trigger wieder aus.
+        const schemeKey = name + "__scheme";
+        const chosenScheme = rec[schemeKey];
+        if (
+          typeof chosenScheme === "string" &&
+          chosenScheme !== "" &&
+          SCHEMES.includes(chosenScheme)
+        ) {
+          return PWTOOLS_SCHEME_PREFIX + chosenScheme + "|" + plain;
         }
 
         return plain;
@@ -557,6 +606,12 @@ function actionsFactory(config) {
             type: "Bool",
             default: true,
           },
+          {
+            name: "allow_hash_import",
+            label: "Vorberechnete Hashes importieren (nur vertrauenswürdiger Import)",
+            type: "Bool",
+            default: false,
+          },
         ];
       },
       run: async ({ row, table, configuration, old_row, updated_fields }) => {
@@ -566,12 +621,61 @@ function actionsFactory(config) {
 
         // Als Validate-Trigger enthaelt row die neuen Feldwerte (v_in);
         // als Insert/Update-Trigger enthaelt row die eingefuegte Zeile.
-        const plain = row && row[plainField];
+        let plain = row && row[plainField];
+
+        // Bei Update-Trigger liefert Saltcorn updated_fields (=v_in) mit —
+        // dort steht der rohe Sentinel evtl. drin, auch wenn row bereits
+        // aus (existing + v) zusammengesetzt wurde. Wir bevorzugen den
+        // rohen updated_fields-Wert, wenn er einen Sentinel/Err-Marker
+        // enthaelt.
+        if (
+          updated_fields &&
+          typeof updated_fields === "object" &&
+          typeof updated_fields[plainField] === "string" &&
+          (updated_fields[plainField].startsWith(PWTOOLS_SCHEME_PREFIX) ||
+            updated_fields[plainField].startsWith(PWTOOLS_ERR_PREFIX))
+        ) {
+          plain = updated_fields[plainField];
+        }
 
         // Zuerst: Fehler-Marker aus readFromFormRecord im Fieldview erkennen
         // (Confirm-Mismatch oder Policy-Fail).
         if (typeof plain === "string" && plain.startsWith(PWTOOLS_ERR_PREFIX)) {
           return { error: plain.slice(PWTOOLS_ERR_PREFIX.length) };
+        }
+
+        // Schema-Sentinel auspacken. Das Fieldview kodiert die User-Wahl aus
+        // dem <name>__scheme-Dropdown hier hinein, weil Saltcorn Extra-
+        // Formfelder sonst aus v_in wegwirft (siehe PWTOOLS_SCHEME_PREFIX).
+        let userChosenScheme = null;
+        if (typeof plain === "string") {
+          const unwrapped = extractSchemeSentinel(plain);
+          if (unwrapped.scheme) {
+            userChosenScheme = unwrapped.scheme;
+            plain = unwrapped.plain;
+            // row auf den Klartext zurueckbiegen, damit spaetere
+            // set_fields-Merges nicht den Sentinel weiterreichen.
+            if (row && typeof row === "object") row[plainField] = plain;
+          }
+        }
+
+        // Zweiter Fallback: wenn immer noch kein Sentinel gefunden wurde,
+        // aber updated_fields[plainField] einen Sentinel enthaelt (siehe
+        // oben), duerfte der schon oben gegriffen haben — hier extra
+        // defensiv gegen ein moegliches Sentinel im row[plainField+"__sentinel"]
+        // Case (frueher Zwischenstand).
+        if (!userChosenScheme && row && typeof row === "object") {
+          const rawSentinel = row[`${plainField}__sentinel`];
+          if (
+            typeof rawSentinel === "string" &&
+            rawSentinel.startsWith(PWTOOLS_SCHEME_PREFIX)
+          ) {
+            const unwrapped = extractSchemeSentinel(rawSentinel);
+            if (unwrapped.scheme) {
+              userChosenScheme = unwrapped.scheme;
+              delete row[`${plainField}__sentinel`];
+            }
+          }
         }
 
         if (!plain || typeof plain !== "string") {
@@ -594,9 +698,30 @@ function actionsFactory(config) {
           };
         }
 
+        // Prioritaet der Schema-Wahl:
+        //   1. User-Auswahl im Formular-Dropdown (via Sentinel im
+        //      readFromFormRecord-Rueckgabewert). Gewinnt immer, weil der
+        //      User im Formular aktiv gewaehlt hat.
+        //   2. Direktes row[__scheme]-Extra-Feld — greift, wenn das
+        //      Fieldview den Sentinel nicht durchlaufen hat (z.B.
+        //      Legacy-Views ohne readFromFormRecord, oder Trigger, die
+        //      row inkl. Extra-Feld reingereicht bekommen).
+        //   3. Auch updated_fields[__scheme] pruefen (Update-Trigger-Pfad).
+        //   4. Trigger-Config (Fixierung pro Trigger, cfg.scheme).
+        //   5. Plugin-Default-Schema (nur Vorbelegung, kein Zwang).
+        //   6. Hard fallback BLF-CRYPT.
+        const rowSchemeExtra =
+          (row && row[`${plainField}__scheme`]) ||
+          (updated_fields && updated_fields[`${plainField}__scheme`]) ||
+          null;
+        const allowChoice = pluginState.allow_user_choice !== false;
         const scheme =
+          (allowChoice && userChosenScheme && SCHEMES.includes(userChosenScheme) ? userChosenScheme : null) ||
+          (allowChoice && rowSchemeExtra &&
+          SCHEMES.includes(rowSchemeExtra)
+            ? rowSchemeExtra
+            : null) ||
           cfg.scheme ||
-          row[`${plainField}__scheme`] ||
           (pluginState && pluginState.default_scheme) ||
           "BLF-CRYPT";
 
@@ -613,6 +738,9 @@ function actionsFactory(config) {
 
         // Fall 1: es ist schon ein Hash - unveraendert speichern.
         if (looksLikeHash(plain)) {
+          if (cfg.allow_hash_import !== true) {
+            return { error: "Vorberechnete Hashes sind in diesem Passwortformular nicht zugelassen." };
+          }
           // Bei Validate-Trigger: set_fields wird von Table.insertRow/updateRow
           // in v_in gemergt und blockt den DB-Write nicht.
           const setFields = { [hashField]: plain };
@@ -690,7 +818,12 @@ function routesFactory(config) {
       method: "post",
       callback: async (req, res) => {
         try {
+          res.set("Cache-Control", "no-store");
+          if (!req.user || !req.user.id || req.user.role_id === 100)
+            return res.status(401).json({ error: "Anmeldung erforderlich." });
           const body = req.body || {};
+          if (typeof body.password !== "string" || body.password.length > 256)
+            return res.status(400).json({ error: "Passwort muss eine Zeichenkette mit höchstens 256 Zeichen sein." });
           const merged = mergePolicy(pluginState, body.policy || {});
           const result = evaluate(body.password || "", merged);
           res.json(result);
@@ -724,7 +857,7 @@ module.exports = {
   headers: () => [
     {
       script:
-        "https://cdnjs.cloudflare.com/ajax/libs/zxcvbn/4.4.2/zxcvbn.js",
+        `/plugins/public/${PLUGIN_NAME}/zxcvbn.js`,
     },
     {
       script: `/plugins/public/${PLUGIN_NAME}/strength-client.js`,

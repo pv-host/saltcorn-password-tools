@@ -261,7 +261,7 @@ test("Trigger: Confirm-Mismatch als Fallback (ohne readFromFormRecord) -> error"
   assert.match(res.error, /Passwortbestaetigung/);
 });
 
-test("Trigger: bestehender Hash wird durchgereicht", async () => {
+test("Trigger: Hash-Import braucht explizite Freigabe", async () => {
   const trigger = getTrigger();
   const hash =
     "{BLF-CRYPT}$2y$12$abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV";
@@ -273,8 +273,13 @@ test("Trigger: bestehender Hash wird durchgereicht", async () => {
       hash_field: "password_hash",
     },
   });
-  assert.ok(!res.error);
-  assert.equal(res.set_fields.password_hash, hash);
+  assert.match(res.error, /nicht zugelassen/);
+  const imported = await trigger.run({
+    row: { password_plain: hash }, table: null,
+    configuration: { plain_field: "password_plain", hash_field: "password_hash", allow_hash_import: true },
+  });
+  assert.ok(!imported.error);
+  assert.equal(imported.set_fields.password_hash, hash);
 });
 
 test("Trigger: set_fields enthaelt KEINE Extra-Formfelder (__confirm, __scheme)", async () => {
@@ -321,4 +326,403 @@ test("Trigger: leeres Klartextfeld -> notice, kein Fehler, keine Aktion", async 
   });
   assert.ok(!res.error);
   assert.match(res.notice, /uebersprungen/);
+});
+
+// ---------------------------------------------------------------------------
+// v0.4.0: Schema-Sentinel - User-Auswahl aus Form-Dropdown durchreichen
+// ---------------------------------------------------------------------------
+
+test("Fieldview: __scheme-Auswahl wird als Sentinel kodiert", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const fv = getFieldview();
+      const rec = {
+        password_plain: "password1234",
+        password_plain__scheme: "SHA512-CRYPT",
+      };
+      const out = fv.readFromFormRecord(rec, "password_plain");
+      assert.match(out, /^__PWTOOLS_SCHEME__:SHA512-CRYPT\|password1234$/);
+    }
+  );
+});
+
+test("Fieldview: unbekanntes Schema wird ignoriert (kein Sentinel)", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const fv = getFieldview();
+      const rec = {
+        password_plain: "password1234",
+        password_plain__scheme: "BOGUS-SCHEME",
+      };
+      const out = fv.readFromFormRecord(rec, "password_plain");
+      assert.equal(out, "password1234");
+    }
+  );
+});
+
+test("Fieldview: leeres __scheme wird ignoriert", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const fv = getFieldview();
+      const rec = { password_plain: "password1234", password_plain__scheme: "" };
+      const out = fv.readFromFormRecord(rec, "password_plain");
+      assert.equal(out, "password1234");
+    }
+  );
+});
+
+test("Fieldview: doppelter Sentinel-Wrap wird vermieden", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const fv = getFieldview();
+      const already = "__PWTOOLS_SCHEME__:CRAM-MD5|password";
+      const out = fv.readFromFormRecord(
+        { password_plain: already },
+        "password_plain"
+      );
+      assert.equal(out, already);
+    }
+  );
+});
+
+test("Trigger: User-Wahl aus Sentinel gewinnt gegen Plugin-Default", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      bcrypt_rounds: 4,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const trigger = getTrigger();
+      const res = await trigger.run({
+        row: { password_plain: "__PWTOOLS_SCHEME__:SHA512-CRYPT|password1234" },
+        table: null,
+        configuration: {
+          plain_field: "password_plain",
+          hash_field: "password_hash",
+          enforce_policy: false,
+          clear_plain: false,
+        },
+      });
+      assert.ok(!res.error, "error should be undefined, got: " + res.error);
+      assert.match(
+        res.set_fields.password_hash,
+        /^\{SHA512-CRYPT\}\$6\$/,
+        "hash should be SHA512-CRYPT, got: " + res.set_fields.password_hash
+      );
+    }
+  );
+});
+
+test("Trigger: User-Wahl gewinnt auch gegen Trigger-cfg.scheme", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      bcrypt_rounds: 4,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const trigger = getTrigger();
+      const res = await trigger.run({
+        row: { password_plain: "__PWTOOLS_SCHEME__:CRAM-MD5|password" },
+        table: null,
+        configuration: {
+          plain_field: "password_plain",
+          hash_field: "password_hash",
+          scheme: "PBKDF2", // Admin will PBKDF2 fixieren
+          enforce_policy: false,
+          clear_plain: false,
+        },
+      });
+      assert.match(res.set_fields.password_hash, /^\{CRAM-MD5\}[0-9a-f]{64}$/);
+    }
+  );
+});
+
+test("Trigger: ohne Sentinel -> Plugin-Default wird verwendet", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "PBKDF2",
+      with_prefix: true,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const trigger = getTrigger();
+      const res = await trigger.run({
+        row: { password_plain: "password1234" },
+        table: null,
+        configuration: {
+          plain_field: "password_plain",
+          hash_field: "password_hash",
+          enforce_policy: false,
+          clear_plain: false,
+        },
+      });
+      assert.match(res.set_fields.password_hash, /^\{PBKDF2\}\$1\$/);
+    }
+  );
+});
+
+// -----------------------------------------------------------------------------
+// v0.4.2: Prio-Chain-Fixes fuer Prefix-Bug bei individueller Hash-Wahl
+// -----------------------------------------------------------------------------
+
+test("v0.4.2: row[__scheme] direkt (kein Sentinel) schlaegt cfg.scheme", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      bcrypt_rounds: 4,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const trigger = getTrigger();
+      const row = {
+        password_plain: "password1234",
+        password_plain__scheme: "PBKDF2",
+      };
+      const res = await trigger.run({
+        row,
+        table: null,
+        configuration: {
+          plain_field: "password_plain",
+          hash_field: "password_hash",
+          scheme: "BLF-CRYPT",
+          enforce_policy: false,
+        },
+      });
+      assert.ok(res.set_fields.password_hash.startsWith("{PBKDF2}"),
+        "Erwartet {PBKDF2}-Prefix, bekam: " + res.set_fields.password_hash.slice(0, 20));
+    }
+  );
+});
+
+test("v0.4.2: updated_fields mit Sentinel wird als User-Wahl erkannt", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      bcrypt_rounds: 4,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const trigger = getTrigger();
+      const row = { password_plain: "password1234" };
+      const updated_fields = {
+        password_plain: "__PWTOOLS_SCHEME__:CRAM-MD5|password1234",
+      };
+      const res = await trigger.run({
+        row,
+        table: null,
+        configuration: {
+          plain_field: "password_plain",
+          hash_field: "password_hash",
+          scheme: "BLF-CRYPT",
+          enforce_policy: false,
+        },
+        updated_fields,
+      });
+      assert.ok(res.set_fields.password_hash.startsWith("{CRAM-MD5}"),
+        "Erwartet {CRAM-MD5}-Prefix, bekam: " + res.set_fields.password_hash.slice(0, 20));
+    }
+  );
+});
+
+test("v0.4.2: updated_fields[__scheme] direkt schlaegt cfg.scheme", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      bcrypt_rounds: 4,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const trigger = getTrigger();
+      const row = { password_plain: "password1234" };
+      const updated_fields = {
+        password_plain: "password1234",
+        password_plain__scheme: "SHA512-CRYPT",
+      };
+      const res = await trigger.run({
+        row,
+        table: null,
+        configuration: {
+          plain_field: "password_plain",
+          hash_field: "password_hash",
+          scheme: "BLF-CRYPT",
+          enforce_policy: false,
+        },
+        updated_fields,
+      });
+      assert.ok(res.set_fields.password_hash.startsWith("{SHA512-CRYPT}"),
+        "Erwartet {SHA512-CRYPT}-Prefix, bekam: " + res.set_fields.password_hash.slice(0, 20));
+    }
+  );
+});
+
+test("v0.4.2: ungueltiges row[__scheme] wird verworfen, cfg.scheme greift", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      bcrypt_rounds: 4,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const trigger = getTrigger();
+      const row = {
+        password_plain: "password1234",
+        password_plain__scheme: "NICHT-VORHANDEN",
+      };
+      const res = await trigger.run({
+        row,
+        table: null,
+        configuration: {
+          plain_field: "password_plain",
+          hash_field: "password_hash",
+          scheme: "SHA512-CRYPT",
+          enforce_policy: false,
+        },
+      });
+      assert.ok(res.set_fields.password_hash.startsWith("{SHA512-CRYPT}"),
+        "Erwartet {SHA512-CRYPT}-Prefix, bekam: " + res.set_fields.password_hash.slice(0, 20));
+    }
+  );
+});
+
+test("v0.4.2: maskHash liefert 10 Kopf- + 4 Endzeichen fuer lange Hashes", async () => {
+  const fvs = plugin.fieldviews();
+  const showView = fvs.password_hash_show;
+  const long = "{BLF-CRYPT}$2y$12$AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+  const html = showView.run(long);
+  // Der sichtbare Text ist zwischen den <span>-Tags, nicht im title=-Attribut.
+  const bodyMatch = />([^<]+)<\/span>$/.exec(html);
+  assert.ok(bodyMatch, "HTML muss span-Inhalt enthalten: " + html);
+  const body = bodyMatch[1];
+  // Erwartet: '{BLF-CRYPT' (10 Zeichen) + '…' + letzte 4 Zeichen '2345'
+  assert.equal(body, "{BLF-CRYPT\u20262345",
+    "maskHash muss HEAD=10 + \u2026 + TAIL=4 rendern, aber gerendert wurde: " + body);
+});
+
+test("v0.4.2: maskHash liefert Punkte fuer sehr kurze Werte", async () => {
+  const fvs = plugin.fieldviews();
+  const showView = fvs.password_hash_show;
+  const short = "kurz1";
+  const html = showView.run(short);
+  assert.ok(html.includes("\u2022\u2022\u2022\u2022") || html.includes("••••"),
+    "Kurzer Wert muss vollstaendig maskiert werden: " + html);
+});
+
+test("Trigger: nach Sentinel-Unwrap ist row[plain] Klartext, kein Sentinel", async () => {
+  await withPluginConfig(
+    {
+      default_scheme: "BLF-CRYPT",
+      with_prefix: true,
+      bcrypt_rounds: 4,
+      min_length: 4,
+      min_score: 0,
+      require_upper: false,
+      require_lower: false,
+      require_digit: false,
+      require_symbol: false,
+    },
+    async () => {
+      const trigger = getTrigger();
+      const row = { password_plain: "__PWTOOLS_SCHEME__:SHA512-CRYPT|password1234" };
+      await trigger.run({
+        row,
+        table: null,
+        configuration: {
+          plain_field: "password_plain",
+          hash_field: "password_hash",
+          enforce_policy: false,
+          clear_plain: true, // request clear -> row[plain] must not contain sentinel
+        },
+      });
+      // clear_plain: true -> das Fieldview-Wert im row wird nach dem Trigger
+      // via set_fields ueberschrieben; unser eigener Unwrap darf keinesfalls
+      // den Sentinel im row belassen.
+      assert.ok(
+        !row.password_plain.startsWith("__PWTOOLS_SCHEME__:"),
+        "row[plain] soll den Sentinel nicht enthalten, ist: " + row.password_plain
+      );
+    }
+  );
 });

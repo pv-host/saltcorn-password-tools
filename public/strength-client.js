@@ -104,6 +104,7 @@
 
     function computePolicyOk(pw) {
       if (!pw) return false;
+      if (pw.length > 256) return false;
       const rules = evalRules(pw);
       if (rules.problems.length > 0) return false;
       if (window.zxcvbn && policy.minScore !== undefined) {
@@ -117,7 +118,7 @@
       const rules = evalRules(pw);
       let score = -1;
       const suggestions = [];
-      if (window.zxcvbn && pw) {
+      if (window.zxcvbn && pw && pw.length <= 256) {
         const z = window.zxcvbn(pw);
         score = z.score;
         if (z.feedback && z.feedback.warning)
@@ -272,8 +273,9 @@
 
       // Wrap den inline onclick.
       if (inlineOnClick) {
+        const originalClick = btn.onclick;
         btn.removeAttribute("onclick");
-        btn._pwtoolsOrigOnClick = inlineOnClick;
+        btn._pwtoolsOrigOnClick = typeof originalClick === "function" ? originalClick : null;
       }
 
       btn.addEventListener(
@@ -290,8 +292,7 @@
           if (btn._pwtoolsOrigOnClick) {
             // Ausfuehren im Kontext des Buttons.
             try {
-              // eslint-disable-next-line no-new-func
-              new Function("event", btn._pwtoolsOrigOnClick).call(btn, ev);
+              btn._pwtoolsOrigOnClick.call(btn, ev);
             } catch (e) {
               console.error("[pwtools] onclick error:", e);
             }

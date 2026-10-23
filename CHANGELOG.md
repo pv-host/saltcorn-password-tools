@@ -1,4 +1,83 @@
+# 0.4.3: Sicherheits- und Datenschutzbereinigung
+
+Installationsbezüge neutralisiert; Einzelheiten siehe SECURITY-REVIEW.md. Es wurden keine produktiven Instanzen verändert.
+
 # Changelog
+
+## 0.4.2 — 2026-07-06
+
+### Changed — Hash-Anzeige zeigt mehr Kontext
+- **`password_hash_show` Fieldview:** Die maskierte Anzeige eines Passwort-Hashes
+  zeigt jetzt die **ersten 10 Zeichen** (statt bisher 6) und die letzten 4
+  Zeichen. Der Dovecot-Praefix (`{BLF-CRYPT}`, `{SHA512-CRYPT}`, `{PBKDF2}`,
+  `{CRAM-MD5}`) ist damit vollstaendig sichtbar, auch fuer das laengste
+  Schema-Label.
+- Ganz kurze Werte (bis 15 Zeichen) werden weiterhin komplett mit `••••`
+  ersetzt, damit die Anzeige nie den kompletten Hash preisgibt.
+
+### Fixed — Prefix-Bug bei individueller Hash-Wahl (Sonderfall)
+- **Symptom:** In v0.4.1 gewinnt die User-Wahl aus dem Formular-Dropdown
+  gegen die Trigger-Config, wenn der Sentinel im `readFromFormRecord`-Fluss
+  ankommt. In einigen Setups (Trigger `Update`-When statt `Validate`-When,
+  bestimmte View-Layouts, Legacy-Views mit direkter row-Uebergabe) wird der
+  Sentinel aber schon vor dem Trigger entfernt — die User-Wahl landet
+  stattdessen in `updated_fields` oder als Extra-Feld `password_plain__scheme`
+  direkt auf `row`. In diesen Faellen fiel die Trigger-Action auf
+  `cfg.scheme` (also den in der Trigger-Config voreingestellten Wert)
+  zurueck, statt die User-Wahl zu respektieren.
+- **Fix:** Die Prioritaetskette der Trigger-Action durchsucht jetzt mehrere
+  Quellen fuer die User-Wahl:
+  1. Sentinel im `row[plain_field]`-Wert (Hauptpfad, seit v0.4.1)
+  2. Sentinel im `updated_fields[plain_field]` (Update-Trigger-Pfad)
+  3. `row[plain_field + "__scheme"]` direkt (Legacy-Layout ohne
+     readFromFormRecord)
+  4. `updated_fields[plain_field + "__scheme"]` (Update-Trigger, direktes
+     Extra-Feld)
+  5. Trigger-`configuration.scheme` (Fixierung pro Trigger)
+  6. Plugin-`default_scheme` (Vorbelegung)
+  7. Hard fallback `BLF-CRYPT`
+- Ungueltige Schema-Namen (nicht in `SCHEMES`) im row-Extra-Feld werden
+  jetzt verworfen, statt eine falsche Schema-Auswahl zu erzeugen.
+
+### Tests
+- 6 neue Tests fuer die erweiterte Prio-Chain (`row[__scheme]` direkt,
+  `updated_fields` mit Sentinel, `updated_fields[__scheme]` direkt,
+  invalides `row[__scheme]`) und fuer die 10+4-Maskierung.
+- Testcount: **40 → 46 gruen**.
+
+## 0.4.1 — 2026-07-05
+
+### Fixed — Schema-Wahl aus dem Formular-Dropdown wurde ignoriert
+- **Symptom:** Der `{SCHEMA}`-Präfix im gespeicherten Hash entsprach immer
+  dem Plugin-Default (`Modules → Configure → Default Schema`), auch wenn
+  der User im Formular ein anderes Schema ausgewählt hatte.
+- **Ursache:** Das Fieldview `password_input` schreibt die User-Wahl in ein
+  Extra-Formfeld `<name>__scheme`. Saltcorns `Form.validate()` verarbeitet
+  aber nur Felder, die als Table-Field registriert sind — `__scheme` ist
+  keins und wird deshalb aus `form.values` (und damit aus `v_in` beim
+  Insert/Update) entfernt, bevor der Validate-Trigger überhaupt sieht,
+  was der User gewählt hat. Der Trigger fiel zwangsläufig auf den
+  Plugin-Default zurück.
+- **Fix:** Die User-Wahl reist jetzt "in-band" mit. `readFromFormRecord`
+  im Fieldview kodiert die im Formular gewählte Scheme als Sentinel
+  `__PWTOOLS_SCHEME__:<SCHEME>|<Klartext>` in den Rückgabewert; der
+  Validate-Trigger packt den Sentinel als erstes wieder aus und benutzt
+  die extrahierte Scheme mit **höchster Priorität** — vor Trigger-Config,
+  Fieldview-Default und Plugin-Default. Damit gilt konsequent: die
+  Plugin-Default-Scheme ist nur noch eine Vorbelegung, keine Fesselung.
+- **Neue Prioritätskette in der Trigger-Action:**
+  1. User-Auswahl im Formular-Dropdown (via Sentinel)
+  2. Fieldview-`defaultScheme` (Hidden Field, wenn `allow_user_choice=false`)
+  3. Trigger-`configuration.scheme`
+  4. Plugin-`default_scheme`
+  5. Hard fallback `BLF-CRYPT`
+- Robustheit: doppelte Sentinel-Wraps werden vermieden, ungültige
+  Schema-Namen (nicht in `SCHEMES`) werden verworfen, und der Sentinel
+  wird nach dem Auspacken sauber aus dem `row`-Objekt entfernt, damit er
+  nie in ein DB-Insert gerät.
+
+### Tests
+- 40/40 grün (32 → 40; acht neue Sentinel- und Prioritätstests).
 
 ## 0.4.0 — 2026-07-05
 

@@ -1,3 +1,7 @@
+# Bereinigte Fassung 0.4.3
+
+Stand 21.10.2026. Vor Installation SECURITY-REVIEW.md und die übergeordnete UMSTELLUNG.md lesen. Historische Testangaben im folgenden Text gelten nicht als erneuter Integrationstest dieser Fassung.
+
 # saltcorn-password-tools
 
 Ein [Saltcorn](https://saltcorn.com/)-Plugin, das Passwörter im **Klartext** entgegennimmt
@@ -32,7 +36,7 @@ Sobald das Plugin im Store gelistet ist:
 ### Aus lokalem Checkout / Fork
 
 ```bash
-git clone https://github.com/pv-host/saltcorn-password-tools.git
+git clone https://example.invalid/repository
 cd saltcorn-password-tools
 npm install
 saltcorn install-plugin -d $(pwd)
@@ -42,7 +46,7 @@ saltcorn install-plugin -d $(pwd)
 
 ```bash
 saltcorn install-plugin -n saltcorn-password-tools \
-  -s git -l https://github.com/pv-host/saltcorn-password-tools
+  -s git -l https://example.invalid/repository
 ```
 
 ---
@@ -84,13 +88,14 @@ Field-View-Konfigurationsoptionen (auf `password_input` klickbar):
 | `require_confirm` | `true` | Zweites Passwortfeld zur Bestätigung anzeigen |
 | `primary_label` | `Passwort` | Beschriftung des Passwortfelds |
 | `confirm_label` | `Passwort wiederholen` | Beschriftung des Bestätigungsfelds |
-| `scheme` | *(leer)* | Fest vorgegebenes Hash-Schema (überschreibt Plugin-Default) |
-| `allow_user_choice` | `true` | Schema-Dropdown im Formular anzeigen |
+| `scheme` | *(leer)* | Vorbelegung für das Dropdown. Die aktive Auswahl des Users im Formular gewinnt — auch gegen Plugin-Default und Trigger-Config. |
+| `allow_user_choice` | `true` | Schema-Dropdown im Formular anzeigen. Ist der Wert `false`, wird `scheme` als Hidden Field festgeschrieben. |
 | `min_length` / `min_score` | *(aus Plugin-Config)* | Policy-Overrides |
 
 Für `password_hash` in Show-Views die Field-View **`password_hash_show`** wählen
-(zeigt den Hash maskiert). In Edit-Views braucht `password_hash` in der Regel
-gar nicht angezeigt zu werden.
+(zeigt die ersten 10 und letzten 4 Zeichen — der Dovecot-Praefix bleibt so
+vollstaendig sichtbar, der eigentliche Hash-Anteil ist maskiert). In
+Edit-Views braucht `password_hash` in der Regel gar nicht angezeigt zu werden.
 
 ### 3. Automatisches Hashen einrichten
 
@@ -208,7 +213,7 @@ Antwort:
 ## Entwicklung
 
 ```bash
-git clone https://github.com/pv-host/saltcorn-password-tools.git
+git clone https://example.invalid/repository
 cd saltcorn-password-tools
 npm install
 npm test
@@ -224,4 +229,4 @@ saltcorn dev:localize-plugin $(pwd)
 
 ## Lizenz
 
-MIT © 2026 Peter Vassen / pv-host.net
+MIT © 2026 Plugin contributors / example.invalid
